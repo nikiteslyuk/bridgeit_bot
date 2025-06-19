@@ -1,0 +1,422 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+from __future__ import annotations
+
+from pathlib import Path
+from collections import defaultdict
+from typing import Dict, List, Set, Tuple
+
+import numpy as np
+import cv2
+from ultralytics import YOLO, __version__ as ULTRA_VER
+from sklearn.mixture import GaussianMixture
+
+# ──────────── константы ────────────
+MAX_HAND_LEN = 13 
+RANKS = "AKQJT98765432"
+SUITS = "SHDC"
+ALL_CARDS: Set[str] = {r + s for s in SUITS for r in RANKS}
+
+ORDER = ["W", "N", "E", "S"]
+PREVIEW_ORDER = ["S", "E", "N", "W"]
+SUIT_SYM = {"S": "♠", "H": "♥", "D": "♦", "C": "♣"}
+
+
+def _card_unicode(card: str) -> str:
+    r, s = card[0], card[1]
+    rank = "10" if r == "T" else r
+    return f"{rank}{SUIT_SYM[s]}"
+
+
+def _hand_pretty(hand: Set[str]) -> str:
+    res = []
+    for s in "SHDC":
+        ranks = [("10" if r == "T" else r) for r in RANKS if r + s in hand]
+        res.append(f"{SUIT_SYM[s]}{''.join(ranks) or '—'}")
+    return "  ".join(res)
+
+
+# ──────────── основной класс ────────────
+class BridgeCardDetector:
+    def __init__(self, img_path: str, model_path: str = "yolov8s_playing_cards.pt"):
+        if tuple(map(int, ULTRA_VER.split(".")[:3])) < (8, 2, 0):
+            raise RuntimeError("Требуется Ultralytics ≥ 8.2.0")
+
+        self.img_path = Path(img_path)
+        self.model = YOLO(model_path)
+        self._dealer: str = "N"
+
+        self.hands: Dict[str, Set[str]] = {p: set() for p in ORDER}
+        self._dealer: str | None = None
+        # (x1, y1, x2, y2, raw_label, player)
+        self._dets: List[Tuple[int, int, int, int, str, str]] = []
+
+        self._process()
+        self._auto_fill_trivial()
+
+    def _auto_fill_trivial(self) -> str:
+        """
+        Если пропущенные карты *обязательно* принадлежат единственной
+        недоукомплектованной руке, добавляет их туда автоматически и
+        возвращает сообщение вида  
+
+            «Тривиально определилось положение потерянных 3 карт → N: 10♠ A♦ …»
+
+        Если автодополнение не произошло — возвращает пустую строку.
+        """
+        missing = ALL_CARDS - set().union(*self.hands.values())
+        if not missing:
+            return ""
+
+        needs = {p: MAX_HAND_LEN - len(self.hands[p]) for p in ORDER}
+        candidates = [p for p, n in needs.items() if n > 0]
+
+        if len(candidates) == 1 and needs[candidates[0]] == len(missing):
+            hand = candidates[0]
+            self.hands[hand].update(missing)
+
+            pretty = " ".join(_card_unicode(c) for c in sorted(missing))
+            msg = (f"Тривиально определилось положение потерянных "
+                   f"{len(missing)} карт → {hand}: {pretty}")
+
+            return msg
+
+        return ""
+
+    def current_order(self) -> list[str]:
+        """
+        Порядок для вывода рук: с дилера по часовой стрелке.
+        """
+        d = self._dealer or "N"
+        d = self._norm_player(d)
+        start = ORDER.index(d)
+        return ORDER[start:] + ORDER[:start]
+
+
+    # ──────────── публичные операции ────────────
+    def preview(self) -> str:
+        """
+        Возвращает текст-сводку:
+        Распознанный расклад:
+        <dealer> (13/13): ...
+        <next>   (13/13): ...
+        <next>   (13/13): ...
+        <next>   (13/13): ...
+        """
+        lines: list[str] = ["Распознанный расклад:"]
+        for p in self.current_order():
+            lines.append(f"{p} ({len(self.hands[p])}/13): {_hand_pretty(self.hands[p])}")
+
+        miss = self.missing_cards()
+        if miss:
+            lines.append("")
+            lines.append("Потерянные карты: " + " ".join(_card_unicode(c) for c in miss))
+        else:
+            lines.append("")
+            lines.append("Все карты определены.")
+
+        return "\n".join(lines)
+
+
+    def visualize(self, save: str):
+        """
+        Сохранить изображение с разметкой карт по указанному пути.
+
+        :param save: строка с полным путём/именем файла.  
+                     Если пустая строка или None, вызывается ValueError.
+        """
+        if not save:
+            raise ValueError("Путь для сохранения изображения должен быть задан.")
+
+        img = cv2.imread(str(self.img_path))
+        if img is None:
+            raise FileNotFoundError(f"Не удалось открыть исходное изображение: {self.img_path}")
+
+        cols = {"N": (255, 0, 0),
+                "S": (0, 255, 0),
+                "E": (0, 0, 255),
+                "W": (0, 255, 255)}
+
+        for x1, y1, x2, y2, raw, pl in self._dets:
+            cv2.rectangle(img, (x1, y1), (x2, y2), cols[pl], 2)
+            cv2.putText(img, pl, (x1, y1 - 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, cols[pl], 2)
+
+        cv2.imwrite(save, img)
+
+    def missing_cards(self) -> List[str]:
+        return sorted(ALL_CARDS - set().union(*self.hands.values()))
+
+    # ---------- add / move / remove ----------
+    def add(self, spec: str):
+        card_tok, hand_tok = spec.strip().split()
+        card = self._norm_card(card_tok)
+        hand = self._norm_player(hand_tok)
+
+        for p in ORDER:
+            if card in self.hands[p] and p != hand:
+                raise ValueError(f"{_card_unicode(card)} уже у {p}")
+        self.hands[hand].add(card)
+
+        for i, (_, _, _, _, raw, pl) in enumerate(self._dets):
+            if self._norm_card(raw) == card and pl != hand:
+                self._dets[i] = (*self._dets[i][:5], hand)
+
+        self._auto_fill_trivial()
+
+    def move(self, spec: str):
+        card_tok, dest_hand = spec.strip().split()
+        card = self._norm_card(card_tok)
+        dest = self._norm_player(dest_hand)
+        src = next((p for p in ORDER if card in self.hands[p]), None)
+        if src is None:
+            raise ValueError(f"{_card_unicode(card)} не найдена")
+        if src == dest:
+            return
+        if card in self.hands[dest]:
+            raise ValueError(f"{_card_unicode(card)} уже у {dest}")
+
+        self.hands[src].remove(card)
+        self.hands[dest].add(card)
+
+        for i, (x1, y1, x2, y2, raw, pl) in enumerate(self._dets):
+            if self._norm_card(raw) == card:
+                self._dets[i] = (x1, y1, x2, y2, raw, dest)
+
+    def remove(self, spec: str):
+        card_tok, hand_tok = spec.strip().split()
+        card = self._norm_card(card_tok)
+        hand = self._norm_player(hand_tok)
+
+        if card not in self.hands[hand]:
+            raise ValueError(f"{_card_unicode(card)} нет у {hand}")
+        self.hands[hand].remove(card)
+
+        # чистим кэш детекций
+        self._dets = [d for d in self._dets if not (
+            self._norm_card(d[4]) == card and d[5] == hand)]
+
+    # ---------- прочее ----------
+
+    def to_pbn(self, dealer: str | None = None) -> str:
+        """
+        Вернуть строку PBN с правильным порядком в зависимости от сдающего.
+        Если dealer не указан и не установлен ранее ‒ автоматически берётся 'N'.
+        """
+        # 1. Определяем сдающего
+        d = dealer or self._dealer or "N"
+        d = self._norm_player(d)
+        # 2. Собираем порядок рук с дилера по часовой стрелке
+        start = ORDER.index(d)
+        order = ORDER[start:] + ORDER[:start]
+        # 3. Формируем строку для каждой руки (масти через точку, руки через пробел)
+        parts = []
+        for p in order:
+            suits = ["".join(r for r in RANKS if r + s in self.hands[p]) for s in SUITS]
+            parts.append(".".join(suits))
+        # 4. Склеиваем в одну строку PBN
+        # return f"{d}:{' '.join(parts)}"
+        return f"{' '.join(parts)}"
+
+    # ──────────── внутренние детали ────────────
+    def _process(self):
+        img = cv2.imread(str(self.img_path))
+        if img is None:
+            raise FileNotFoundError(self.img_path)
+
+        pred = self.model.predict(img, imgsz=1600, augment=True,
+                                  conf=0.55, verbose=False)[0]
+        if len(pred.boxes) < 4:
+            return
+
+        id2label = self.model.names
+        centers, info = [], []
+        for b in pred.boxes:
+            x1, y1, x2, y2 = map(float, b.xyxy[0])
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+            centers.append([cx, cy])
+            info.append((int(x1), int(y1), int(x2), int(y2),
+                         id2label[int(b.cls)], float(b.conf.cpu().item())))
+        centers = np.array(centers)
+
+        gmm = GaussianMixture(n_components=4, covariance_type="full",
+                              random_state=0)
+        labels = gmm.fit_predict(centers)
+        centroids = gmm.means_
+
+        # --- определяем, какой кластер чьей руке соответствует ---
+        cl2pts = defaultdict(list)
+        for (cx, cy), cl in zip(centers, labels):
+            cl2pts[cl].append((cx, cy))
+        orient = {}
+        for cl, pts in cl2pts.items():
+            xs, ys = zip(*pts)
+            orient[cl] = "H" if max(xs) - min(xs) >= max(ys) - min(ys) else "V"
+
+        horiz = [cl for cl, o in orient.items() if o == "H"]
+        vert = [cl for cl, o in orient.items() if o == "V"]
+        if len(horiz) == 2 and len(vert) == 2:
+            north = min(horiz, key=lambda i: np.median([p[1] for p in cl2pts[i]]))
+            south = max(horiz, key=lambda i: np.median([p[1] for p in cl2pts[i]]))
+            west = min(vert,  key=lambda i: np.median([p[0] for p in cl2pts[i]]))
+            east = max(vert,  key=lambda i: np.median([p[0] for p in cl2pts[i]]))
+        else:
+            north = int(np.argmin([c[1] for c in centroids]))
+            south = int(np.argmax([c[1] for c in centroids]))
+            rest = [i for i in range(4) if i not in (north, south)]
+            west, east = sorted(rest, key=lambda i: centroids[i][0])
+
+        cluster2p = {north: "N", south: "S", west: "W", east: "E"}
+        pl2cluster = {v: k for k, v in cluster2p.items()}
+
+        # --- первая запись карт ---
+        best: Dict[str, Tuple[float, str]] = {}
+        for (x1, y1, x2, y2, raw, conf), cl in zip(info, labels):
+            player = cluster2p[cl]
+            label = self._norm_card(raw)
+            if label in best and conf <= best[label][0]:
+                continue
+            if label in best:
+                prev = best[label][1]
+                self.hands[prev].discard(label)
+            self.hands[player].add(label)
+            best[label] = (conf, player)
+            self._dets.append((x1, y1, x2, y2, raw, player))
+
+        # =========================================================
+        #        П О В Т О Р Н А Я   П Р О В Е Р К А
+        # =========================================================
+        DIST_THRESH = 20.0
+
+        for idx, (x1, y1, x2, y2, raw, pl) in enumerate(self._dets):
+            cx = (x1 + x2) / 2
+            cy = (y1 + y2) / 2
+            dists = np.linalg.norm(centroids - np.array([cx, cy]), axis=1)
+            nearest = int(np.argmin(dists))
+            nearest_player = cluster2p[nearest]
+            current_cluster = pl2cluster[pl]
+            # разница дистанций
+            if nearest != current_cluster and dists[current_cluster] - dists[nearest] > DIST_THRESH:
+                label = self._norm_card(raw)
+                # перенос
+                self.hands[pl].discard(label)
+                self.hands[nearest_player].add(label)
+                self._dets[idx] = (x1, y1, x2, y2, raw, nearest_player)
+
+    def clockwise(self):
+        """
+        Сдвигает все руки по часовой стрелке:
+        N → E, E → S, S → W, W → N
+        """
+        # Сдвигаем руки
+        old_hands = {p: set(self.hands[p]) for p in ORDER}
+        for i, p in enumerate(ORDER):
+            next_p = ORDER[(i + 1) % 4]
+            self.hands[next_p] = old_hands[p]
+        # Обновляем _dets
+        def shift_player(pl):
+            idx = ORDER.index(pl)
+            return ORDER[(idx + 1) % 4]
+        self._dets = [
+            (*det[:5], shift_player(det[5]))
+            for det in self._dets
+        ]
+
+    def uclockwise(self):
+        """
+        Сдвигает все руки против часовой стрелки:
+        N → W, W → S, S → E, E → N
+        """
+        old_hands = {p: set(self.hands[p]) for p in ORDER}
+        for i, p in enumerate(ORDER):
+            prev_p = ORDER[(i - 1) % 4]
+            self.hands[prev_p] = old_hands[p]
+        def shift_player(pl):
+            idx = ORDER.index(pl)
+            return ORDER[(idx - 1) % 4]
+        self._dets = [
+            (*det[:5], shift_player(det[5]))
+            for det in self._dets
+        ]
+
+    # ---- helpers ----
+    @staticmethod
+    def _norm_card(s: str) -> str:
+        s = s.upper().replace("10", "T")
+        suit = next((c for c in s if c in SUITS), "")
+        rank = next((c for c in s if c in RANKS), "")
+        if not suit or not rank:
+            raise ValueError(f"Неверная карта: {s}")
+        return rank + suit
+
+    @staticmethod
+    def _norm_player(p: str) -> str:
+        p = p.strip().upper()
+        if p not in ORDER:
+            raise ValueError("Рука должна быть N/E/S/W.")
+        return p
+
+    @classmethod
+    def from_pbn(cls, pbn: str) -> "BridgeCardDetector":
+        """
+        Создает BridgeCardDetector из строки PBN.
+        Фото и модель не нужны. Детекции не происходят.
+        """
+        # --- Парсинг дилера и строк ---
+        pbn = pbn.strip()
+        dealer = None
+        if ":" in pbn:
+            dealer, deals = pbn.split(":", 1)
+            dealer = dealer.strip().upper()
+            deals = deals.strip()
+        else:
+            deals = pbn
+            dealer = "N"
+        # Разбиваем на руки по пробелу (их должно быть 4)
+        hands_str = deals.strip().split()
+        if len(hands_str) != 4:
+            raise ValueError("PBN должен содержать 4 руки")
+        # Порядок по дилеру
+        dealer = dealer if dealer in ORDER else "N"
+        start = ORDER.index(dealer)
+        order = ORDER[start:] + ORDER[:start]
+        # Создаём пустой детектор без распознавания
+        obj = cls.__new__(cls)
+        obj.img_path = None
+        obj.model = None
+        obj._dealer = dealer
+        obj.hands = {p: set() for p in ORDER}
+        obj._dets = []
+        # Разложим карты по рукам
+        for p, hand_str in zip(order, hands_str):
+            suits = hand_str.split(".")
+            if len(suits) != 4:
+                raise ValueError(f"PBN рука должна содержать 4 масти: {hand_str}")
+            for s, cards in zip(SUITS, suits):
+                for r in cards:
+                    if r == "1":  # "10"
+                        # Нужно поймать "10"
+                        if cards.startswith("10"):
+                            r = "T"
+                            cards = cards[2:]
+                        else:
+                            raise ValueError("Неверное обозначение карты 10")
+                    if r == "T":
+                        obj.hands[p].add("T"+s)
+                    elif r in RANKS:
+                        obj.hands[p].add(r+s)
+        # Проверяем что у каждого <= 13
+        for p in ORDER:
+            if len(obj.hands[p]) > MAX_HAND_LEN:
+                raise ValueError(f"У {p} слишком много карт: {len(obj.hands[p])}")
+        return obj
+
+
+
+# ──────────── демо ────────────
+if __name__ == "__main__":
+    det = BridgeCardDetector.from_pbn("T652.7652.Q6.AKJ 3.3.T97532.Q9853 Q4.AKQ984.AK4.76 AKJ987.JT.J8.T42")
+    # det = BridgeCardDetector('img/567.jpg')
+    print(det.preview())
+    print(det.to_pbn())
