@@ -69,6 +69,30 @@ def ignore_telegram_edit_errors(func):
     return wrapper
 
 
+def require_fresh_window(handler):
+    """Старое окно → молча переписываем текст и убираем клавиатуру."""
+    @wraps(handler)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        last_id: int | None = context.user_data.get("active_msg_id")
+
+        if last_id is None or query.message.message_id != last_id:
+            try:
+                await query.edit_message_text(
+                    "⚠️ Это неактуальное окно.\n"
+                    "Используйте кнопки из самого последнего сообщения.",
+                    reply_markup=None,
+                )
+            except BadRequest:
+                pass            # сообщение может быть слишком старым
+            await query.answer() # убираем «часики»
+            return
+
+        return await handler(update, context)
+
+    return wrapper
+
+
 def generate_filename() -> str:
     """
     Возвращает случайное имя файла с расширением .jpg,
@@ -181,11 +205,12 @@ def set_logic_from_pbn(context: ContextTypes.DEFAULT_TYPE, pbn: str) -> BridgeLo
 @require_auth
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("state", None)  # сброс FSM при старте
-    await update.message.reply_text(
+    sent = await update.message.reply_text(
         "Я нахожусь на стадии закрытого бета‑тестирования.\n"
         "Тыкай на кнопки, ищи баги и пиши создателю: @bridgeit_support!",
         reply_markup=main_menu_markup(),
     )
+    context.user_data["active_msg_id"] = sent.message_id
 
 
 async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -206,15 +231,14 @@ async def add_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Формат: /addcard <карта> <рука> (например: /addcard 4h W)")
         return
 
-    arg = " ".join(context.args)
     try:
-        detector.add(arg)
-        # Показываем обновлённую сдачу и кнопки редактирования
-        await update.message.reply_text(
+        detector.add(" ".join(context.args))
+        sent = await update.message.reply_text(
             _pre(detector.preview()),
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=analyze_result_markup()
+            reply_markup=analyze_result_markup(),
         )
+        context.user_data["active_msg_id"] = sent.message_id
     except Exception as e:
         await update.message.reply_text(f"Ошибка: {e}")
 
@@ -223,23 +247,21 @@ async def add_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def move_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     detector: BridgeCardDetector = context.user_data.get("detector")
     if not detector:
-        await update.message.reply_text(
-            "⛔ Эта команда доступна только при редактировании распознанной сдачи."
-        )
+        await update.message.reply_text("⛔ Эта команда доступна только при редактировании распознанной сдачи.")
         return
 
     if not context.args:
         await update.message.reply_text("Формат: /movecard <карта> <куда> (например: /movecard 4h N)")
         return
 
-    arg = " ".join(context.args)
     try:
-        detector.move(arg)
-        await update.message.reply_text(
+        detector.move(" ".join(context.args))
+        sent = await update.message.reply_text(
             _pre(detector.preview()),
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=analyze_result_markup()
+            reply_markup=analyze_result_markup(),
         )
+        context.user_data["active_msg_id"] = sent.message_id
     except Exception as e:
         await update.message.reply_text(f"Ошибка: {e}")
 
@@ -248,77 +270,73 @@ async def move_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def remove_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     detector: BridgeCardDetector = context.user_data.get("detector")
     if not detector:
-        await update.message.reply_text(
-            "⛔ Эта команда доступна только при редактировании распознанной сдачи."
-        )
+        await update.message.reply_text("⛔ Эта команда доступна только при редактировании распознанной сдачи.")
         return
 
     if not context.args:
         await update.message.reply_text("Формат: /removecard <карта> <рука> (например: /removecard 4h W)")
         return
 
-    arg = " ".join(context.args)
     try:
-        detector.remove(arg)
-        await update.message.reply_text(
+        detector.remove(" ".join(context.args))
+        sent = await update.message.reply_text(
             _pre(detector.preview()),
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=analyze_result_markup()
+            reply_markup=analyze_result_markup(),
         )
+        context.user_data["active_msg_id"] = sent.message_id
     except Exception as e:
         await update.message.reply_text(f"Ошибка: {e}")
+
 
 @require_auth
 async def clockwise(update: Update, context: ContextTypes.DEFAULT_TYPE):
     detector: BridgeCardDetector = context.user_data.get("detector")
     if not detector:
-        await update.message.reply_text(
-            "⛔ Эта команда доступна только при редактировании сдачи."
-        )
+        await update.message.reply_text("⛔ Эта команда доступна только при редактировании сдачи.")
         return
+
     detector.clockwise()
-    await update.message.reply_text(
+    sent = await update.message.reply_text(
         _pre(detector.preview()),
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=analyze_result_markup()
+        reply_markup=analyze_result_markup(),
     )
+    context.user_data["active_msg_id"] = sent.message_id
 
 
 @require_auth
 async def uclockwise(update: Update, context: ContextTypes.DEFAULT_TYPE):
     detector: BridgeCardDetector = context.user_data.get("detector")
     if not detector:
-        await update.message.reply_text(
-            "⛔ Эта команда доступна только при редактировании сдачи."
-        )
+        await update.message.reply_text("⛔ Эта команда доступна только при редактировании сдачи.")
         return
+
     detector.uclockwise()
-    await update.message.reply_text(
+    sent = await update.message.reply_text(
         _pre(detector.preview()),
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=analyze_result_markup()
+        reply_markup=analyze_result_markup(),
     )
+    context.user_data["active_msg_id"] = sent.message_id
 
 
 @require_auth
 async def pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     detector: BridgeCardDetector = context.user_data.get("detector")
     if not detector:
-        await update.message.reply_text(
-            "⛔ Эта команда доступна только при редактировании сдачи."
-        )
+        await update.message.reply_text("⛔ Эта команда доступна только при редактировании сдачи.")
         return
     try:
-        pbn = detector.to_pbn()
-        await update.message.reply_text(
-            f"PBN:\n{_pre(pbn)}",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        await update.message.reply_text(
+        pbn_str = detector.to_pbn()
+        await update.message.reply_text(f"PBN:\n{_pre(pbn_str)}", parse_mode=ParseMode.MARKDOWN)
+
+        sent = await update.message.reply_text(
             _pre(detector.preview()),
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=analyze_result_markup()
+            reply_markup=analyze_result_markup(),
         )
+        context.user_data["active_msg_id"] = sent.message_id
     except Exception as e:
         await update.message.reply_text(f"Ошибка: {e}")
 
@@ -346,291 +364,499 @@ async def accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @require_auth
-async def cmd_display(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-    await update.message.reply_text(
-        _pre(logic.display()),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-
-@require_auth
-async def cmd_ddtable(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("contract_set"):
-        await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
-        return
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-    await update.message.reply_text(
-        _pre(logic.dd_table()), 
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-
-@require_auth
 async def cmd_setcontract(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logic: BridgeLogic = context.user_data.get("logic")
     if not logic:
         await update.message.reply_text("Сначала загрузите сдачу.")
         return
+
     if len(context.args) < 2:
-        await update.message.reply_text("Формат: /setcontract <контракт/масть> <первая_рука> (пример: /setcontract 3NT N)")
-        return
-    try:
-        contract = context.args[0]
-        first = context.args[1]
-        result = logic.set_contract(contract, first)
-        context.user_data["contract_set"] = True
         await update.message.reply_text(
-            "Можете приступать к анализу.",
-            parse_mode=ParseMode.MARKDOWN,
+            "Формат: /setcontract <контракт/масть> <первая_рука> (пример: /setcontract 3NT N)"
         )
-        # Показываем расклад и меню анализа
-        await update.message.reply_text(
+        return
+
+    try:
+        contract, first = context.args[0], context.args[1]
+        logic.set_contract(contract, first)
+        context.user_data["contract_set"] = True
+
+        sent = await update.message.reply_text(
             _pre(logic.display()),
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=analysis_keyboard(0)
+            reply_markup=analysis_keyboard(0),
         )
+        context.user_data["active_msg_id"] = sent.message_id
+
     except Exception as e:
         await update.message.reply_text(f"Ошибка: {e}")
 
 
+# ---------------------------------------------------------------------------
+# Показать расклад
+# ---------------------------------------------------------------------------
+@require_auth
+async def cmd_display(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logic: BridgeLogic = context.user_data.get("logic")
+    if not logic:
+        await update.message.reply_text("Сначала загрузите сдачу.")
+        return
+
+    text = _pre(logic.display())
+    idx = [c[1] for c in ANALYSIS_COMMANDS].index("display")
+    page = idx // ANALYSIS_CMDS_PER_PAGE
+
+    sent = await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=analysis_keyboard(page),
+    )
+    context.user_data["active_msg_id"] = sent.message_id
+
+
+# ---------------------------------------------------------------------------
+# Double-dummy таблица
+# ---------------------------------------------------------------------------
+@require_auth
+async def cmd_ddtable(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("contract_set"):
+        await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
+        return
+
+    logic: BridgeLogic = context.user_data.get("logic")
+    if not logic:
+        await update.message.reply_text("Сначала загрузите сдачу.")
+        return
+
+    text = _pre(logic.dd_table())
+    idx = [c[1] for c in ANALYSIS_COMMANDS].index("dd_table")
+    page = idx // ANALYSIS_CMDS_PER_PAGE
+
+    sent = await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=analysis_keyboard(page),
+    )
+    context.user_data["active_msg_id"] = sent.message_id
+
+
+# ---------------------------------------------------------------------------
+# Текущий игрок
+# ---------------------------------------------------------------------------
 @require_auth
 async def cmd_currentplayer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("contract_set"):
         await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
         return
+
     logic: BridgeLogic = context.user_data.get("logic")
     if not logic:
         await update.message.reply_text("Сначала загрузите сдачу.")
         return
-    pl = logic.current_player()
-    await update.message.reply_text(f"Текущий игрок: {pl.abbr}")
+
+    text = f"Текущий игрок: {logic.current_player().abbr}"
+    idx = [c[1] for c in ANALYSIS_COMMANDS].index("current_player")
+    page = idx // ANALYSIS_CMDS_PER_PAGE
+
+    sent = await update.message.reply_text(
+        text,
+        reply_markup=analysis_keyboard(page),
+    )
+    context.user_data["active_msg_id"] = sent.message_id
 
 
+# ---------------------------------------------------------------------------
+# Оптимальный ход
+# ---------------------------------------------------------------------------
 @require_auth
 async def cmd_optimalmove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("contract_set"):
         await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
         return
+
     logic: BridgeLogic = context.user_data.get("logic")
     if not logic:
         await update.message.reply_text("Сначала загрузите сдачу.")
         return
+
     try:
-        card = logic.optimal_move()
-        await update.message.reply_text(f"Оптимальный ход: {card}")
+        text = f"Оптимальный ход: {logic.optimal_move()}"
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
+        text = f"Ошибка: {e}"
+
+    idx = [c[1] for c in ANALYSIS_COMMANDS].index("play_optimal_card")
+    page = idx // ANALYSIS_CMDS_PER_PAGE
+
+    sent = await update.message.reply_text(
+        text,
+        reply_markup=analysis_keyboard(page),
+    )
+    context.user_data["active_msg_id"] = sent.message_id
 
 
+# ---------------------------------------------------------------------------
+# Показать варианты ходов
+# ---------------------------------------------------------------------------
 @require_auth
 async def cmd_showmoveoptions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("contract_set"):
         await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
         return
+
     logic: BridgeLogic = context.user_data.get("logic")
     if not logic:
         await update.message.reply_text("Сначала загрузите сдачу.")
         return
+
     try:
-        await update.message.reply_text(_pre(logic.show_move_options()), parse_mode=ParseMode.MARKDOWN)
+        text = _pre(logic.show_move_options())
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
+        text = f"Ошибка: {e}"
+
+    # этой команды нет в клавиатуре → показываем на первой странице
+    sent = await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=analysis_keyboard(0),
+    )
+    context.user_data["active_msg_id"] = sent.message_id
 
 
+# ---------------------------------------------------------------------------
+# Сыграть карту
+# ---------------------------------------------------------------------------
 @require_auth
 async def cmd_playcard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("contract_set"):
         await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
         return
+
     logic: BridgeLogic = context.user_data.get("logic")
     if not logic:
         await update.message.reply_text("Сначала загрузите сдачу.")
         return
+
     if not context.args:
         await update.message.reply_text("Формат: /playcard <карта> (пример: /playcard 7h)")
         return
+
     try:
-        card_str = context.args[0]
-        res = logic.play_card(card_str)
-        await update.message.reply_text(res)
+        text = logic.play_card(context.args[0])
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
+        text = f"Ошибка: {e}"
+
+    idx = [c[1] for c in ANALYSIS_COMMANDS].index("play_optimal_card")
+    page = idx // ANALYSIS_CMDS_PER_PAGE
+
+    sent = await update.message.reply_text(
+        text,
+        reply_markup=analysis_keyboard(page),
+    )
+    context.user_data["active_msg_id"] = sent.message_id
 
 
+# ---------------------------------------------------------------------------
+# Сыграть взятку
+# ---------------------------------------------------------------------------
 @require_auth
 async def cmd_playtrick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("contract_set"):
         await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
         return
+
     logic: BridgeLogic = context.user_data.get("logic")
     if not logic:
         await update.message.reply_text("Сначала загрузите сдачу.")
         return
-    # Пример: /playtrick 7h 4c 3d 8s
+
     if len(context.args) < 4:
         await update.message.reply_text("Формат: /playtrick <карта1> <карта2> <карта3> <карта4>")
         return
+
     try:
-        trick = " ".join(context.args[:4])
-        res = logic.play_trick(trick)
-        await update.message.reply_text(res)
+        text = logic.play_trick(" ".join(context.args[:4]))
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
+        text = f"Ошибка: {e}"
+
+    idx = [c[1] for c in ANALYSIS_COMMANDS].index("play_optimal_trick")
+    page = idx // ANALYSIS_CMDS_PER_PAGE
+
+    sent = await update.message.reply_text(
+        text,
+        reply_markup=analysis_keyboard(page),
+    )
+    context.user_data["active_msg_id"] = sent.message_id
 
 
+# ---------------------------------------------------------------------------
+# Отменить последнюю взятку
+# ---------------------------------------------------------------------------
 @require_auth
 async def cmd_undolasttrick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("contract_set"):
         await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
         return
+
     logic: BridgeLogic = context.user_data.get("logic")
     if not logic:
         await update.message.reply_text("Сначала загрузите сдачу.")
         return
-    res = logic.undo_last_trick()
-    await update.message.reply_text(res)
+
+    text = logic.undo_last_trick()
+
+    idx = [c[1] for c in ANALYSIS_COMMANDS].index("undo_last_trick")
+    page = idx // ANALYSIS_CMDS_PER_PAGE
+
+    sent = await update.message.reply_text(
+        text,
+        reply_markup=analysis_keyboard(page),
+    )
+    context.user_data["active_msg_id"] = sent.message_id
 
 
+# ---------------------------------------------------------------------------
+# Перейти к взятке
+# ---------------------------------------------------------------------------
 @require_auth
 async def cmd_gototrick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("contract_set"):
         await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
         return
+
     logic: BridgeLogic = context.user_data.get("logic")
     if not logic:
         await update.message.reply_text("Сначала загрузите сдачу.")
         return
+
     if len(context.args) < 1:
         await update.message.reply_text("Формат: /gototrick <номер>")
         return
+
     try:
-        no_ = int(context.args[0])
-        res = logic.goto_trick(no_)
-        await update.message.reply_text(res)
+        text = logic.goto_trick(int(context.args[0]))
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
+        text = f"Ошибка: {e}"
+
+    # этой команды нет в клавиатуре → страница 0
+    sent = await update.message.reply_text(
+        text,
+        reply_markup=analysis_keyboard(0),
+    )
+    context.user_data["active_msg_id"] = sent.message_id
 
 
+# ---------------------------------------------------------------------------
+# Показать историю
+# ---------------------------------------------------------------------------
 @require_auth
 async def cmd_showhistory(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("contract_set"):
         await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
         return
+
     logic: BridgeLogic = context.user_data.get("logic")
     if not logic:
         await update.message.reply_text("Сначала загрузите сдачу.")
         return
-    await update.message.reply_text(_pre(logic.show_history()), parse_mode=ParseMode.MARKDOWN)
+
+    text = _pre(logic.show_history())
+
+    idx = [c[1] for c in ANALYSIS_COMMANDS].index("show_history")
+    page = idx // ANALYSIS_CMDS_PER_PAGE
+
+    sent = await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=analysis_keyboard(page),
+    )
+    context.user_data["active_msg_id"] = sent.message_id
 
 
+# ---------------------------------------------------------------------------
+# Доиграть до конца оптимально
+# ---------------------------------------------------------------------------
 @require_auth
 async def cmd_playoptimaltoend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("contract_set"):
         await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
         return
+
     logic: BridgeLogic = context.user_data.get("logic")
     if not logic:
         await update.message.reply_text("Сначала загрузите сдачу.")
         return
+
     logic.play_optimal_to_end()
-    await update.message.reply_text("Доигрыш до конца выполнен.")
+    text = "Доигрыш до конца выполнен."
+
+    idx = [c[1] for c in ANALYSIS_COMMANDS].index("play_optimal_to_end")
+    page = idx // ANALYSIS_CMDS_PER_PAGE
+
+    sent = await update.message.reply_text(
+        text,
+        reply_markup=analysis_keyboard(page),
+    )
+    context.user_data["active_msg_id"] = sent.message_id
 
 
+# ---------------------------------------------------------------------------
+# Показать текущую руку
+# ---------------------------------------------------------------------------
 @require_auth
 async def cmd_showcurrenthand(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("contract_set"):
         await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
         return
+
     logic: BridgeLogic = context.user_data.get("logic")
     if not logic:
         await update.message.reply_text("Сначала загрузите сдачу.")
         return
-    await update.message.reply_text(_pre(logic.show_current_hand()), parse_mode=ParseMode.MARKDOWN)
+
+    text = _pre(logic.show_current_hand())
+
+    idx = [c[1] for c in ANALYSIS_COMMANDS].index("show_current_hand")
+    page = idx // ANALYSIS_CMDS_PER_PAGE
+
+    sent = await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=analysis_keyboard(page),
+    )
+    context.user_data["active_msg_id"] = sent.message_id
 
 
+# ---------------------------------------------------------------------------
+# Перейти к карте во взятке
+# ---------------------------------------------------------------------------
 @require_auth
 async def cmd_gotocard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("contract_set"):
         await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
         return
+
     logic: BridgeLogic = context.user_data.get("logic")
     if not logic:
         await update.message.reply_text("Сначала загрузите сдачу.")
         return
+
     if len(context.args) < 2:
         await update.message.reply_text("Формат: /gotocard <номер_взятки> <номер_карты>")
         return
+
     try:
-        trick_no = int(context.args[0])
-        card_no = int(context.args[1])
-        res = logic.goto_card(trick_no, card_no)
-        await update.message.reply_text(res)
+        text = logic.goto_card(int(context.args[0]), int(context.args[1]))
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
+        text = f"Ошибка: {e}"
+
+    # этой команды нет в клавиатуре → страница 0
+    sent = await update.message.reply_text(
+        text,
+        reply_markup=analysis_keyboard(0),
+    )
+    context.user_data["active_msg_id"] = sent.message_id
 
 
+# ---------------------------------------------------------------------------
+# Сыграть оптимальную карту
+# ---------------------------------------------------------------------------
 @require_auth
 async def cmd_playoptimalcard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("contract_set"):
         await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
         return
+
     logic: BridgeLogic = context.user_data.get("logic")
     if not logic:
         await update.message.reply_text("Сначала загрузите сдачу.")
         return
-    res = logic.play_optimal_card()
-    await update.message.reply_text(res)
+
+    text = logic.play_optimal_card()
+
+    idx = [c[1] for c in ANALYSIS_COMMANDS].index("play_optimal_card")
+    page = idx // ANALYSIS_CMDS_PER_PAGE
+
+    sent = await update.message.reply_text(
+        text,
+        reply_markup=analysis_keyboard(page),
+    )
+    context.user_data["active_msg_id"] = sent.message_id
 
 
+# ---------------------------------------------------------------------------
+# Сыграть оптимальную взятку
+# ---------------------------------------------------------------------------
 @require_auth
 async def cmd_playoptimaltrick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("contract_set"):
         await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
         return
+
     logic: BridgeLogic = context.user_data.get("logic")
     if not logic:
         await update.message.reply_text("Сначала загрузите сдачу.")
         return
-    res = logic.play_optimal_trick()
-    await update.message.reply_text(res)
+
+    text = logic.play_optimal_trick()
+
+    idx = [c[1] for c in ANALYSIS_COMMANDS].index("play_optimal_trick")
+    page = idx // ANALYSIS_CMDS_PER_PAGE
+
+    sent = await update.message.reply_text(
+        text,
+        reply_markup=analysis_keyboard(page),
+    )
+    context.user_data["active_msg_id"] = sent.message_id
 
 
+# ---------------------------------------------------------------------------
+# Сыграть N оптимальных взяток
+# ---------------------------------------------------------------------------
 @require_auth
 async def cmd_playoptimaltricks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("contract_set"):
         await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
         return
+
     logic: BridgeLogic = context.user_data.get("logic")
     if not logic:
         await update.message.reply_text("Сначала загрузите сдачу.")
         return
+
     if len(context.args) < 1:
         await update.message.reply_text("Формат: /playoptimaltricks <сколько_взяток>")
         return
+
     try:
         n = int(context.args[0])
-        res = logic.play_optimal_tricks(n)
-        await update.message.reply_text(res if res else "Взятки разыграны.")
+        text = logic.play_optimal_tricks(n) or "Взятки разыграны."
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
+        text = f"Ошибка: {e}"
+
+    idx = [c[1] for c in ANALYSIS_COMMANDS].index("play_optimal_trick")
+    page = idx // ANALYSIS_CMDS_PER_PAGE
+
+    sent = await update.message.reply_text(
+        text,
+        reply_markup=analysis_keyboard(page),
+    )
+    context.user_data["active_msg_id"] = sent.message_id
+
 
 # === CALLBACK‑КНОПКИ ===========================================================
 
 @require_auth
+@require_fresh_window
 @ignore_telegram_edit_errors
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Главное и сервисные меню.
+    """
     query = update.callback_query
     await query.answer()
     data = query.data
 
-    # --- Главное меню ---
+    # ---------- пункт «🃏 Анализ расклада» ----------
     if data == "menu_analyze":
         context.user_data.pop("state", None)
         await query.edit_message_text(
@@ -639,43 +865,55 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- Подменю "разработка", возвращаем в analyze ---
-    if data in {"menu_privacy", "menu_thanks", "generate_deal"}:
+    # ---------- «Политика» и «Благодарность» -------
+    if data in {"menu_privacy", "menu_thanks"}:
         await query.edit_message_text(
             "Функция находится в разработке 🚧",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_analyze")]]),
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("⬅️ Назад", callback_data="back_main")]]
+            ),
         )
         return
 
-    # --- Ввод PBN ---
+    # ---------- «Сгенерировать сдачу» --------------
+    if data == "generate_deal":
+        await query.edit_message_text(
+            "Функция находится в разработке 🚧",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("⬅️ Назад", callback_data="back_analyze")]]
+            ),
+        )
+        return
+
+    # ---------- ввод PBN-строки ---------------------
     if data == "input_pbn":
         context.user_data["state"] = STATE_AWAIT_PBN
         await query.edit_message_text(
-            "Введите PBN‑строку расклада:",
-            reply_markup=back_to_analyze_markup(),  # Кнопка назад в analyze
+            "Введите PBN-строку расклада:",
+            reply_markup=back_to_analyze_markup(),
         )
         return
 
-    # --- Фото ---
+    # ---------- ввод фото ---------------------------
     if data == "input_photo":
         context.user_data["state"] = STATE_AWAIT_PHOTO
         await query.edit_message_text(
             "Пришлите фото расклада для распознавания:",
-            reply_markup=back_to_analyze_markup(),  # Кнопка назад в analyze
+            reply_markup=back_to_analyze_markup(),
         )
         return
 
-    # --- Кнопка назад из analyze в main ---
+    # ---------- «Назад» из analyze → главное меню ---
     if data == "back_main":
         context.user_data.pop("state", None)
         await query.edit_message_text(
-            "Я нахожусь на стадии закрытого бета‑тестирования.\n"
-            "Тыкай на кнопки, ищи баги и пиши автору!",
+            "Я нахожусь на стадии закрытого бета-тестирования.\n"
+            "Тыкай на кнопки, ищи баги и пиши создателю!",
             reply_markup=main_menu_markup(),
         )
         return
 
-    # --- Кнопка назад из подменю в analyze ---
+    # ---------- «Назад» из подменю → меню анализа ---
     if data == "back_analyze":
         context.user_data.pop("state", None)
         await query.edit_message_text(
@@ -684,10 +922,12 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ---------- fallback ----------------------------
     await query.answer("Неизвестная кнопка", show_alert=True)
 
 
 @require_auth
+@require_fresh_window
 @ignore_telegram_edit_errors
 async def analyze_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -721,15 +961,17 @@ async def analyze_result_handler(update: Update, context: ContextTypes.DEFAULT_T
         try:
             pbn = detector.to_pbn()
             # ! Здесь ИСПОЛЬЗУЙ query.message.reply_text, а не update.message.reply_text
-            await query.message.reply_text(
+            sent1 = await query.message.reply_text(
                 f"PBN:\n{_pre(pbn)}",
                 parse_mode=ParseMode.MARKDOWN
             )
-            await query.message.reply_text(
+            context.user_data["active_msg_id"] = sent1.message_id
+            sent2 = await query.message.reply_text(
                 _pre(detector.preview()),
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=analyze_result_markup()
             )
+            context.user_data["active_msg_id"] = sent2.message_id
         except RuntimeError as e:
             await query.message.reply_text(f"Ошибка: {e}")
 
@@ -748,78 +990,80 @@ async def analyze_result_handler(update: Update, context: ContextTypes.DEFAULT_T
 
 
 @require_auth
+@require_fresh_window
 @ignore_telegram_edit_errors
 async def analysis_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data  = query.data
+
+    # ➊ нет контракта → сообщение «Сначала задайте контракт»
     if not context.user_data.get("contract_set"):
-        await query.answer("Сначала задайте контракт командой /setcontract.", show_alert=True)
+        await query.edit_message_text(
+            "⚠️ Сначала задайте контракт командой /setcontract.",
+            reply_markup=None,
+        )
         return
 
-    query = update.callback_query
-    await query.answer()
-    data = query.data
+    # ➋ нет логики (расклад не загружен) → аналогично
+    logic: BridgeLogic = context.user_data.get("logic")
+    if logic is None:
+        await query.edit_message_text(
+            "⚠️ Сначала загрузите сдачу заново.",
+            reply_markup=None,
+        )
+        return
 
-    # Страницы
+    # --- дальше обычная логика перелистывания / вызова методов -------------
     if data.startswith("analysis_page_"):
         page = int(data.split("_")[-1])
         await query.edit_message_reply_markup(reply_markup=analysis_keyboard(page))
         return
 
-    # Кнопки анализа (вызов python‑метода)
     if data.startswith("analysis_"):
         cmd = data[len("analysis_"):]
-        logic: BridgeLogic = context.user_data.get("logic")
-        if not logic:
-            await query.edit_message_text(
-                "Нет активной сдачи. Введите расклад заново.",
-                reply_markup=None
-            )
-            return
-
-        # Найти текущую страницу по команде (чтобы не прыгало на первую)
         try:
-            idx = [c[1] for c in ANALYSIS_COMMANDS].index(cmd)
-            page = idx // ANALYSIS_CMDS_PER_PAGE
-        except Exception:
-            page = 0
-
-        try:
-            method = getattr(logic, cmd)
-            result = method()
+            result = getattr(logic, cmd)()
         except Exception as e:
             result = f"Ошибка: {e}"
+
+        try:
+            idx  = [c[1] for c in ANALYSIS_COMMANDS].index(cmd)
+            page = idx // ANALYSIS_CMDS_PER_PAGE
+        except ValueError:
+            page = 0
 
         await query.edit_message_text(
             _pre(result) if result else "Готово.",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=analysis_keyboard(page)
+            reply_markup=analysis_keyboard(page),
         )
-        return
 
 
 # === ТЕКСТОВЫЙ ВВОД ============================================================
 
 @require_auth
 async def handle_pbn_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state = context.user_data.get("state")
-    text = update.message.text.strip()
-
-    if state == STATE_AWAIT_PBN:
-        try:
-            detector = BridgeCardDetector.from_pbn(text)
-            context.user_data["detector"] = detector
-            context.user_data.pop("state", None)
-            await update.message.reply_text(
-                _pre(detector.preview()),
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=analyze_result_markup()
-            )
-        except ValueError as ve:
-            await update.message.reply_text(f"Некорректный PBN: {ve}")
-        except Exception as e:
-            await update.message.reply_text(f"Ошибка анализа: {e}")
-    else:
-        # если мы НЕ в режиме ожидания PBN, явно отправляем сообщение непонимания
+    if context.user_data.get("state") != STATE_AWAIT_PBN:
         await unknown_message(update, context)
+        return
+
+    try:
+        detector = BridgeCardDetector.from_pbn(update.message.text.strip())
+        context.user_data["detector"] = detector
+        context.user_data.pop("state", None)
+
+        sent = await update.message.reply_text(
+            _pre(detector.preview()),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=analyze_result_markup(),
+        )
+        context.user_data["active_msg_id"] = sent.message_id
+
+    except ValueError as ve:
+        await update.message.reply_text(f"Некорректный PBN: {ve}")
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка анализа: {e}")
+
 
 # === ОБРАБОТКА ФОТО ============================================================
 
@@ -872,11 +1116,12 @@ async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Отправляем результат пользователю
         with open(output_filename, "rb") as out_img:
             await msg.reply_photo(photo=out_img)
-        await msg.reply_text(
+        sent = await msg.reply_text(
             _pre(result),
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=analyze_result_markup()
         )
+        context.user_data["active_msg_id"] = sent.message_id
         context.user_data["detector"] = detector
 
 

@@ -19,6 +19,12 @@ from endplay.dds.solve import solve_board
 PLAYER_MAP: Dict[str, Player] = {p.abbr: p for p in Player}
 PLAYER_CW = [Player.north, Player.east, Player.south, Player.west]
 SUIT_ICONS = {"S": "♠", "H": "♥", "D": "♦", "C": "♣"}
+SUIT2DENOM = {
+    "S": "spades",
+    "H": "hearts",
+    "D": "diamonds",
+    "C": "clubs",
+}
 ICON2LTR = {v: k for k, v in SUIT_ICONS.items()}
 RANKS = "AKQJT98765432"
 ZWS = " "
@@ -30,21 +36,29 @@ def pbn_ok(pbn: str) -> str:
 
 
 def parse_contract(txt: str) -> Denom:
-    """Принимает «3NT», «NT», «4S», «S» … – возвращает Denom.*"""
+    """
+    Принимает «3NT», «NT», «4S», «S» (регистр/пробелы/«10»/«НТ» не важны)
+    и возвращает соответствующий объект Denom.*
+    """
     t = (
         txt.strip()
-        .upper()
-        .replace(" ", "")
-        .replace("10", "T")
-        .replace("НТ", "NT")
+          .upper()
+          .replace("10", "T")
+          .replace("НТ", "NT")
+          .replace(" ", "")
     )
-    if re.fullmatch(r"(NT|[SHDC])", t):
-        return Denom.nt if t == "NT" else getattr(Denom, t.lower())
-    m = re.fullmatch(r"[1-7](NT|[SHDC])", t)
+
+    m = re.fullmatch(r"([1-7]?)(NT|[SHDC])", t)
     if not m:
-        raise ValueError("Формат контракта: 3NT / NT / S / …")
-    suit = m.group(1)
-    return Denom.nt if suit == "NT" else getattr(Denom, suit.lower())
+        raise ValueError("Формат контракта: 3NT / NT / 4S / S / …")
+
+    _, denom_token = m.groups()
+
+    if denom_token == "NT":
+        return Denom.nt
+
+    # S / H / D / C
+    return getattr(Denom, SUIT2DENOM[denom_token])
 
 
 def normalize_card(card: str) -> str:
