@@ -21,7 +21,7 @@ from detection import BridgeCardDetector  # пока не используетс
 os.makedirs("img", exist_ok=True)
 
 TOKEN = os.getenv("TG_TOKEN")
-AUTHORIZED_ID = [375025446, 924088517, 474652623]
+AUTHORIZED_ID = [375025446, 924088517, 474652623, 855302541]
 logging.basicConfig(level=logging.INFO)
 ANALYSIS_COMMANDS = [
     ("Показать расклад", "display"),
@@ -34,6 +34,9 @@ ANALYSIS_COMMANDS = [
     ("Сыграть оптимально до конца", "play_optimal_to_end"),
     ("Показать текущую руку", "show_current_hand"),
 ]
+req = HTTPXRequest(
+    timeout=Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0)
+)
 
 # Максимум 4 кнопки на экран + Стрелки
 ANALYSIS_CMDS_PER_PAGE = 4
@@ -84,8 +87,8 @@ def require_fresh_window(handler):
                     reply_markup=None,
                 )
             except BadRequest:
-                pass            # сообщение может быть слишком старым
-            await query.answer() # убираем «часики»
+                pass
+            await query.answer()
             return
 
         return await handler(update, context)
@@ -184,8 +187,8 @@ def analysis_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(btns)
 
 # === СОСТОЯНИЯ ================================================================
-STATE_AWAIT_PBN = "await_pbn"  # ждём ввод PBN-строки
-STATE_AWAIT_PHOTO = "await_photo"  # ждём фото для распознавания
+STATE_AWAIT_PBN = "await_pbn" 
+STATE_AWAIT_PHOTO = "await_photo"
 
 # === СОЗДАТЬ / ОБНОВИТЬ BridgeLogic ДЛЯ ПОЛЬЗОВАТЕЛЯ ========================== / ОБНОВИТЬ BridgeLogic ДЛЯ ПОЛЬЗОВАТЕЛЯ ==========================
 
@@ -200,11 +203,11 @@ def set_logic_from_pbn(context: ContextTypes.DEFAULT_TYPE, pbn: str) -> BridgeLo
     return logic
 
 
-# === КОМАНДЫ ================================================================== ==================================================================
+# === КОМАНДЫ ================================================================== 
 
 @require_auth
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.pop("state", None)  # сброс FSM при старте
+    context.user_data.pop("state", None)
     sent = await update.message.reply_text(
         "Я нахожусь на стадии закрытого бета‑тестирования.\n"
         "Тыкай на кнопки, ищи баги и пиши создателю: @bridgeit_support!",
@@ -353,7 +356,6 @@ async def accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pbn = detector.to_pbn()
         logic = set_logic_from_pbn(context, pbn)
         context.user_data.pop("detector", None)
-        # Фиксируем флаг, что контракт еще не задан
         context.user_data["contract_set"] = False
         await update.message.reply_text(
             "Расклад принят. Сделайте команду /setcontract <контракт> <первая_рука> (например: /setcontract 3NT N)",
@@ -513,7 +515,6 @@ async def cmd_showmoveoptions(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         text = f"Ошибка: {e}"
 
-    # этой команды нет в клавиатуре → показываем на первой странице
     sent = await update.message.reply_text(
         text,
         parse_mode=ParseMode.MARKDOWN,
@@ -637,7 +638,6 @@ async def cmd_gototrick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         text = f"Ошибка: {e}"
 
-    # этой команды нет в клавиатуре → страница 0
     sent = await update.message.reply_text(
         text,
         reply_markup=analysis_keyboard(0),
@@ -749,7 +749,6 @@ async def cmd_gotocard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         text = f"Ошибка: {e}"
 
-    # этой команды нет в клавиатуре → страница 0
     sent = await update.message.reply_text(
         text,
         reply_markup=analysis_keyboard(0),
@@ -960,7 +959,6 @@ async def analyze_result_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif data == "to_pbn":
         try:
             pbn = detector.to_pbn()
-            # ! Здесь ИСПОЛЬЗУЙ query.message.reply_text, а не update.message.reply_text
             sent1 = await query.message.reply_text(
                 f"PBN:\n{_pre(pbn)}",
                 parse_mode=ParseMode.MARKDOWN
@@ -996,7 +994,6 @@ async def analysis_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data  = query.data
 
-    # ➊ нет контракта → сообщение «Сначала задайте контракт»
     if not context.user_data.get("contract_set"):
         await query.edit_message_text(
             "⚠️ Сначала задайте контракт командой /setcontract.",
@@ -1004,7 +1001,6 @@ async def analysis_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ➋ нет логики (расклад не загружен) → аналогично
     logic: BridgeLogic = context.user_data.get("logic")
     if logic is None:
         await query.edit_message_text(
@@ -1013,7 +1009,6 @@ async def analysis_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- дальше обычная логика перелистывания / вызова методов -------------
     if data.startswith("analysis_page_"):
         page = int(data.split("_")[-1])
         await query.edit_message_reply_markup(reply_markup=analysis_keyboard(page))
@@ -1172,7 +1167,7 @@ def post_init(application: Application):
 
 
 def main():
-    app = Application.builder().token(TOKEN).post_init(post_init).build()
+    app = Application.builder().token(TOKEN).request(req).post_init(post_init).build()
 
     app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE, ignore_edit))
 
@@ -1224,7 +1219,7 @@ def main():
     # === Последний — ловит вообще всё ===
     app.add_handler(MessageHandler(filters.ALL, unknown_message))
 
-    logging.info("Бот запущен …")
+    logging.info("Бот запущен")
     app.run_polling()
 
 
