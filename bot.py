@@ -15,9 +15,8 @@ from telegram.error import BadRequest
 from telegram.constants import ParseMode
 
 # --- ваши модули ---
-from logic import BridgeLogic  # ← твой класс анализа PBN
-from detection import BridgeCardDetector  # пока не используется
-
+from logic import BridgeLogic
+from detection import BridgeCardDetector
 os.makedirs("img", exist_ok=True)
 
 TOKEN = os.getenv("TG_TOKEN")
@@ -37,8 +36,6 @@ ANALYSIS_COMMANDS = [
 req = HTTPXRequest(
     timeout=Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0)
 )
-
-# Максимум 4 кнопки на экран + Стрелки
 ANALYSIS_CMDS_PER_PAGE = 4
 
 
