@@ -2,6 +2,9 @@ import logging
 import os
 import uuid
 import mimetypes
+import json
+import datetime
+import humanize
 from functools import wraps
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -39,6 +42,7 @@ ANALYSIS_COMMANDS = [
 ]
 req = HTTPXRequest(connection_pool_size=10, connect_timeout=10.0, read_timeout=60.0, write_timeout=60.0, pool_timeout=10.0)
 ANALYSIS_CMDS_PER_PAGE = 4
+CACHED_REQUESTS_DATABASE_NAME = "users_requests.json"
 
 
 # === АВТОРИЗАЦИЯ ==============================================================
@@ -128,7 +132,7 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Пожалуйста, общайся со мной на языке команд."
     )
 
-# === ХЕЛПЕРЫ ДЛЯ КЛАВИАТУР ==================================================== 
+# === ХЕЛПЕРЫ ДЛЯ КЛАВИАТУР ====================================================
 
 def main_menu_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -155,7 +159,7 @@ def back_to_analyze_markup() -> InlineKeyboardMarkup:
 
 def analyze_result_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [            
+        [
             InlineKeyboardButton("⏪ Повернуть против часовой", callback_data="rotate_ccw"),
             InlineKeyboardButton("Повернуть по часовой ⏩", callback_data="rotate_cw"),
         ],
@@ -186,7 +190,7 @@ def analysis_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(btns)
 
 # === СОСТОЯНИЯ ================================================================
-STATE_AWAIT_PBN = "await_pbn" 
+STATE_AWAIT_PBN = "await_pbn"
 STATE_AWAIT_PHOTO = "await_photo"
 
 # === СОЗДАТЬ / ОБНОВИТЬ BridgeLogic ДЛЯ ПОЛЬЗОВАТЕЛЯ ========================== / ОБНОВИТЬ BridgeLogic ДЛЯ ПОЛЬЗОВАТЕЛЯ ==========================
@@ -481,7 +485,7 @@ async def cmd_optimalmove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        
+
         text = f"Оптимальный ход: {logic.optimal_move()}"
     except Exception as e:
         text = f"Ошибка: {e}"
@@ -841,6 +845,23 @@ async def cmd_playoptimaltricks(update: Update, context: ContextTypes.DEFAULT_TY
     )
     context.user_data["active_msg_id"] = sent.message_id
 
+# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===================================================
+
+
+async def russian_precisedelta(delta: datetime.timedelta):
+    humanize.i18n.activate("ru_RU")
+    humanized = humanize.precisedelta(delta, minimum_unit='seconds', format='%0.0f')
+    if " и " in humanized:
+        minutes, seconds = humanized.split(" и ")
+        if minutes[-1] == "а":
+            minutes = minutes[:-1] + "у"
+        if seconds[-1] == "а":
+            seconds = seconds[:-1] + "у"
+        return minutes + " и " + seconds
+    if humanized[-1] == "а":
+        humanized = humanized[:-1] + "у"
+    return humanized
+
 
 # === CALLBACK‑КНОПКИ ===========================================================
 
@@ -992,7 +1013,7 @@ async def analyze_result_handler(update: Update, context: ContextTypes.DEFAULT_T
 @ignore_telegram_edit_errors
 async def analysis_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    data  = query.data
+    data = query.data
 
     if not context.user_data.get("contract_set"):
         await query.edit_message_text(
@@ -1094,6 +1115,30 @@ async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "Пожалуйста, отправьте изображение в одном из форматов: JPG, PNG, BMP, GIF или TIFF."
         )
         return
+
+    chat_id = str(msg.chat_id)
+    if os.path.exists(CACHED_REQUESTS_DATABASE_NAME):
+        with open(CACHED_REQUESTS_DATABASE_NAME, "r") as json_file:
+            database = json.load(json_file)
+    else:
+        database = {}
+    datetime_now = datetime.datetime.now()
+    if chat_id in database:
+        current_diff = datetime_now - datetime.datetime.fromisoformat(database[chat_id][0])
+        remaining_time = datetime.timedelta(minutes=10) - current_diff
+        if len(database[chat_id]) > 2 or (len(database[chat_id]) == 2 and remaining_time.total_seconds() > 0):
+            await msg.reply_text(
+                f"Превышено ограничение на распознавание фото. Следующее распознавание будет доступно через {await russian_precisedelta(remaining_time)}"
+            )
+            return
+        else:
+            if len(database[chat_id]) == 2:
+                database[chat_id].pop(0)
+            database[chat_id].append(datetime_now.isoformat())
+    else:
+        database[chat_id] = [datetime_now.isoformat()]
+    with open(CACHED_REQUESTS_DATABASE_NAME, "w") as json_file:
+        json.dump(database, json_file)
 
     # Генерируем уникальные имена с расширением
     input_filename = generate_filename()
