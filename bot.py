@@ -21,13 +21,13 @@ from telegram.request import HTTPXRequest
 
 
 
-# --- ваши модули ---
 from logic import BridgeLogic
 from detection import BridgeCardDetector
 os.makedirs("img", exist_ok=True)
 
 TOKEN = os.getenv("TG_TOKEN")
-AUTHORIZED_ID = [375025446, 924088517, 474652623, 855302541]
+AUTHORIZED_ID = [375025446, 855302541, 5458141225]
+UNLIMITED_PHOTO_ID = [375025446, 855302541]
 logging.basicConfig(level=logging.INFO)
 ANALYSIS_COMMANDS = [
     ("Показать расклад", "display"),
@@ -1117,28 +1117,30 @@ async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     chat_id = str(msg.chat_id)
-    if os.path.exists(CACHED_REQUESTS_DATABASE_NAME):
-        with open(CACHED_REQUESTS_DATABASE_NAME, "r") as json_file:
-            database = json.load(json_file)
-    else:
-        database = {}
-    datetime_now = datetime.datetime.now()
-    if chat_id in database:
-        current_diff = datetime_now - datetime.datetime.fromisoformat(database[chat_id][0])
-        remaining_time = datetime.timedelta(minutes=10) - current_diff
-        if len(database[chat_id]) > 2 or (len(database[chat_id]) == 2 and remaining_time.total_seconds() > 0):
-            await msg.reply_text(
-                f"Превышено ограничение на распознавание фото. Следующее распознавание будет доступно через {await russian_precisedelta(remaining_time)}"
-            )
-            return
+    uid = update.effective_user.id
+    if uid not in UNLIMITED_PHOTO_ID:
+        if os.path.exists(CACHED_REQUESTS_DATABASE_NAME):
+            with open(CACHED_REQUESTS_DATABASE_NAME, "r") as json_file:
+                database = json.load(json_file)
         else:
-            if len(database[chat_id]) == 2:
-                database[chat_id].pop(0)
-            database[chat_id].append(datetime_now.isoformat())
-    else:
-        database[chat_id] = [datetime_now.isoformat()]
-    with open(CACHED_REQUESTS_DATABASE_NAME, "w") as json_file:
-        json.dump(database, json_file)
+            database = {}
+        datetime_now = datetime.datetime.now()
+        if chat_id in database:
+            current_diff = datetime_now - datetime.datetime.fromisoformat(database[chat_id][0])
+            remaining_time = datetime.timedelta(minutes=10) - current_diff
+            if len(database[chat_id]) > 2 or (len(database[chat_id]) == 2 and remaining_time.total_seconds() > 0):
+                await msg.reply_text(
+                    f"Превышено ограничение на распознавание фото. Следующее распознавание будет доступно через {await russian_precisedelta(remaining_time)}"
+                )
+                return
+            else:
+                if len(database[chat_id]) == 2:
+                    database[chat_id].pop(0)
+                database[chat_id].append(datetime_now.isoformat())
+        else:
+            database[chat_id] = [datetime_now.isoformat()]
+        with open(CACHED_REQUESTS_DATABASE_NAME, "w") as json_file:
+            json.dump(database, json_file)
 
     # Генерируем уникальные имена с расширением
     input_filename = generate_filename()
