@@ -14,6 +14,10 @@ from telegram import BotCommand
 from telegram.error import BadRequest
 from telegram.constants import ParseMode
 
+from telegram.request import HTTPXRequest
+
+
+
 # --- ваши модули ---
 from logic import BridgeLogic
 from detection import BridgeCardDetector
@@ -33,9 +37,7 @@ ANALYSIS_COMMANDS = [
     ("Сыграть оптимально до конца", "play_optimal_to_end"),
     ("Показать текущую руку", "show_current_hand"),
 ]
-req = HTTPXRequest(
-    timeout=Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0)
-)
+req = HTTPXRequest(connection_pool_size=10, connect_timeout=10.0, read_timeout=60.0, write_timeout=60.0, pool_timeout=10.0)
 ANALYSIS_CMDS_PER_PAGE = 4
 
 
@@ -418,9 +420,9 @@ async def cmd_display(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 @require_auth
 async def cmd_ddtable(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("contract_set"):
-        await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
-        return
+    # if not context.user_data.get("contract_set"):
+    #     await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
+    #     return
 
     logic: BridgeLogic = context.user_data.get("logic")
     if not logic:
@@ -453,7 +455,7 @@ async def cmd_currentplayer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Сначала загрузите сдачу.")
         return
 
-    text = f"Текущий игрок: {logic.current_player().abbr}"
+    text = f"Текущий игрок: {logic.current_player()}"
     idx = [c[1] for c in ANALYSIS_COMMANDS].index("current_player")
     page = idx // ANALYSIS_CMDS_PER_PAGE
 
@@ -479,6 +481,7 @@ async def cmd_optimalmove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
+        
         text = f"Оптимальный ход: {logic.optimal_move()}"
     except Exception as e:
         text = f"Ошибка: {e}"
