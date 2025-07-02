@@ -25,7 +25,8 @@ from logic import BridgeLogic
 from detection import BridgeCardDetector
 os.makedirs("img", exist_ok=True)
 
-TOKEN = os.getenv("TG_TOKEN")
+# TOKEN = os.getenv("TG_TOKEN")
+TOKEN = "7976805123:AAHpYOm43hazvkXUlDY-q4X9US18upq9uak"
 AUTHORIZED_ID = [375025446, 855302541, 5458141225]
 UNLIMITED_PHOTO_ID = [375025446, 855302541]
 logging.basicConfig(level=logging.INFO)

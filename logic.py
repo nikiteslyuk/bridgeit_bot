@@ -393,27 +393,27 @@ class BridgeLogic:
     # ───── откат последней взятки ─────
     def undo_last_trick(self) -> str:
         """
-        Отменяет последнюю завершённую взятку и возвращает текст-сообщение.
-
-        Возможные варианты сообщений:
-          «Сначала завершите текущую неполную взятку.»
-          «Нет информации о предыдущих взятках.»
-          «Откатили последнюю взятку.»
+        Отменяет последнюю завершённую взятку (ручную или из автоплана)
+        и возвращает текст-сообщение.
         """
         if self._current:
             return "Сначала завершите текущую неполную взятку."
 
-        if not self._trick_history:
+        if self._trick_history:
+            seq = self._trick_history.pop()
+            self._trick_manual_flags.pop()
+        elif self._auto_plan:
+            seq = self._auto_plan.pop()
+            self._auto_manual_flags.pop()
+        else:
             return "Нет информации о предыдущих взятках."
 
-        seq = self._trick_history.pop()
-        self._trick_manual_flags.pop()
         for pl, c in reversed(seq):
             self.deal[pl].add(c)
-
         self.deal.first = seq[0][0]
 
         return "Откатили последнюю взятку."
+
 
     # ───── может быть ValueError ─────
     def goto_trick(self, no_: int) -> str:
@@ -613,20 +613,11 @@ class BridgeLogic:
         """
         Делает оптимальный (по DDS) ход для текущего игрока и
         возвращает строку-сообщение.
-
-        Возможные варианты результата:
-          «Сначала задайте контракт.»
-          «Сдача уже закончена — ходов нет.»
-          «Оптимальный ход: N♣A»
-          '' (пустая строка), если announce=False.
-
-        Сообщение формируется только при announce=True; иначе
-        функция выполняет логику молча и возвращает ''.
         """
         if self.contract is None:
             return "Сначала задайте контракт." if announce else ""
 
-        if len(self.deal[Player.north]) == 0:
+        if all(len(self.deal[p]) == 0 for p in Player):
             return "Сдача уже закончена — ходов нет." if announce else ""
 
         if len(self._current) == 4:
@@ -639,7 +630,6 @@ class BridgeLogic:
 
         card = self.optimal_move()
         pl   = self.current_player()
-
         self.deal.play(card)
         self._current.append((pl, card))
         self._current_manual.append(False)
@@ -659,28 +649,17 @@ class BridgeLogic:
     def play_optimal_trick(self, *, announce: bool = True) -> str:
         """
         Разыгрывает одну взятку оптимально (по DDS) и возвращает строку-сообщение.
-
-        Возможные возвращаемые строки (при announce=True):
-          «Сдача уже закончена.» — если ходов больше нет или контракт не задан;
-          «Оптимально разыграна взятка: N♥8  E♥7  S♥2  W♥K» — успешно взятая
-            взятка (формат карт зависит от результата);
-          '' (пустая строка) — если announce=False или взятка не была завершена
-            в ходе вызова.
-
-        При announce=False метод работает «молча» и всегда возвращает ''.
         """
-        if self.contract is None or len(self.deal[Player.north]) == 0:
+
+        if self.contract is None or all(len(self.deal[p]) == 0 for p in Player):
             return "Сдача уже закончена." if announce else ""
 
         before = len(self._trick_history)
-
-        while len(self._trick_history) == before and len(self.deal[Player.north]):
+        while len(self._trick_history) == before and any(len(self.deal[p]) > 0 for p in Player):
             self.play_optimal_card(announce=False)
 
         if len(self._trick_history) > before and announce:
             seq = self._trick_history[-1]
-            unknown = 13 - self._start_len
-            no_ = unknown + len(self._trick_history)
             return f"Оптимально разыграна взятка: {fmt_seq(seq)}"
 
         return ""
@@ -709,4 +688,15 @@ if __name__ == "__main__":
     # pbn = "W:52.AK64.Q8.AT863 KQJT98.83.KJ.QJ7 A3.QJT7.T762.K95 764.952.A9543.42"
     pbn = "T652.7652.Q6.AKJ 3.3.T97532.Q9853 Q4.AKQ984.AK4.76 AKJ987.JT.J8.T42"
     g = BridgeLogic(pbn)
+    g.set_contract('nt', 'n')
+    g.play_optimal_to_end()
+    g.undo_last_trick()
+    g.undo_last_trick()
+    g.undo_last_trick()
+    g.undo_last_trick()
+
+    g.play_optimal_card()
+    g.play_optimal_card()
+    g.play_optimal_card()
     print(g.display())
+    # print(g.display())
