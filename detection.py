@@ -24,15 +24,20 @@ SUIT_SYM = {"S": "♠", "H": "♥", "D": "♦", "C": "♣"}
 
 
 def _card_unicode(card: str) -> str:
+    """'AS' → 'A♠', 'TS' → 'T♠' (десятка теперь T, а не 10)."""
     r, s = card[0], card[1]
-    rank = "10" if r == "T" else r
-    return f"{rank}{SUIT_SYM[s]}"
+    return f"{r}{SUIT_SYM[s]}"
 
 
 def _hand_pretty(hand: Set[str]) -> str:
+    """
+    Форматирует одну руку в строчку вида
+    ♠AKJ  ♥QJ  ♦T98  ♣—
+    десятка выводится буквой T.
+    """
     res = []
     for s in "SHDC":
-        ranks = [("10" if r == "T" else r) for r in RANKS if r + s in hand]
+        ranks = [r for r in RANKS if r + s in hand]
         res.append(f"{SUIT_SYM[s]}{''.join(ranks) or '—'}")
     return "  ".join(res)
 

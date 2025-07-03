@@ -361,35 +361,6 @@ async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Нет активного расклада для вывода PBN.")
 
 
-@require_auth
-async def cmd_setcontract(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-
-    if len(context.args) < 2:
-        await update.message.reply_text(
-            "Формат: /setcontract <контракт/масть> <первая_рука> (пример: /setcontract 3NT N)"
-        )
-        return
-
-    try:
-        contract, first = context.args[0], context.args[1]
-        logic.set_contract(contract, first)
-        context.user_data["contract_set"] = True
-
-        sent = await update.message.reply_text(
-            _pre(logic.display()),
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=analysis_keyboard(0),
-        )
-        context.user_data["active_msg_id"] = sent.message_id
-
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
-
-
 # ---------------------------------------------------------------------------
 # Показать расклад
 # ---------------------------------------------------------------------------
@@ -1359,7 +1330,6 @@ def post_init(application: Application):
         BotCommand("pbn", "Вывести PBN-строку текущего расклада"),
         BotCommand("display", "Показать текущий расклад карт"),
         BotCommand("ddtable", "Показать double-dummy таблицу"),
-        BotCommand("setcontract", "Задать контракт и первую руку (напр: /setcontract 3NT N)"),
         BotCommand("currentplayer", "Кто сейчас ходит"),
         BotCommand("optimalmove", "Оптимальный ход для текущего игрока"),
         BotCommand("showmoveoptions", "Все варианты ходов для текущей руки"),
@@ -1388,7 +1358,6 @@ def main():
     app.add_handler(CommandHandler("pbn", cmd_pbn))
     app.add_handler(CommandHandler("display", cmd_display))
     app.add_handler(CommandHandler("ddtable", cmd_ddtable))
-    app.add_handler(CommandHandler("setcontract", cmd_setcontract))
     app.add_handler(CommandHandler("currentplayer", cmd_currentplayer))
     app.add_handler(CommandHandler("optimalmove", cmd_optimalmove))
     app.add_handler(CommandHandler("showmoveoptions", cmd_showmoveoptions))
