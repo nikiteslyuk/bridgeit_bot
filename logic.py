@@ -137,6 +137,7 @@ def fmt_seq(seq: List[Tuple[Player, Card]]) -> str:
 class BridgeLogic:
     # ───── может быть ValueError ─────
     def __init__(self, pbn: str):
+        self._pbn_str = pbn_ok(pbn)
         self.deal = Deal.from_pbn(pbn_ok(pbn))
         self._orig_deal = copy.deepcopy(self.deal)
         self._start_len = len(self.deal[Player.north])
@@ -155,6 +156,9 @@ class BridgeLogic:
 
         self._auto_plan: List[List[Tuple[Player, Card]]] = []
         self._auto_manual_flags: List[List[bool]] = []
+
+    def to_pbn(self) -> str:
+        return self._pbn_str[2:]
 
     # ───── вывод рук + указатель хода ─────
     def display(self) -> str:
@@ -765,6 +769,7 @@ if __name__ == "__main__":
     pbn = "AKQJT98765432... .AKQJT98765432.. ...AKQJT98765432 ..AKQJT98765432."
     g = BridgeLogic(pbn)
     g.set_contract('nt', 'w')
+    g.play_optimal_card()
     g.play_optimal_card()
     g.play_optimal_card()
     g.play_optimal_card()

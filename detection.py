@@ -55,6 +55,28 @@ class BridgeCardDetector:
         self._process()
         self._auto_fill_trivial()
 
+    # ---------- сервис для UI кнопок ----------
+    def lost_cards(self) -> list[str]:
+        """
+        Список карт, которые ещё не лежат ни в одной руке.
+        Отсортирован масть-за-мастью S-H-D-C и внутри масти A-K-…-2.
+        """
+        missing = ALL_CARDS - set().union(*self.hands.values())
+        return sorted(
+            missing,
+            key=lambda c: (SUITS.index(c[1]), RANKS.index(c[0]))
+        )
+
+    def hand_cards(self, hand: str) -> list[str]:
+        """
+        Карты выбранной руки (N/E/S/W), отсортированные как выше.
+        """
+        hand = self._norm_player(hand)
+        return sorted(
+            self.hands.get(hand, []),
+            key=lambda c: (SUITS.index(c[1]), RANKS.index(c[0]))
+        )
+
     def _auto_fill_trivial(self) -> str:
         """
         Если пропущенные карты *обязательно* принадлежат единственной
@@ -93,7 +115,6 @@ class BridgeCardDetector:
         start = ORDER.index(d)
         return ORDER[start:] + ORDER[:start]
 
-
     # ──────────── публичные операции ────────────
     def preview(self) -> str:
         """
@@ -117,7 +138,6 @@ class BridgeCardDetector:
             lines.append("Все карты определены.")
 
         return "\n".join(lines)
-
 
     def visualize(self, save: str):
         """
@@ -411,7 +431,6 @@ class BridgeCardDetector:
             if len(obj.hands[p]) > MAX_HAND_LEN:
                 raise ValueError(f"У {p} слишком много карт: {len(obj.hands[p])}")
         return obj
-
 
 
 # ──────────── демо ────────────

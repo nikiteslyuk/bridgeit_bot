@@ -21,7 +21,7 @@ from telegram.request import HTTPXRequest
 
 
 
-from logic import BridgeLogic
+from logic import BridgeLogic, SUIT_ICONS
 from detection import BridgeCardDetector
 os.makedirs("img", exist_ok=True)
 
@@ -49,6 +49,29 @@ CACHED_REQUESTS_DATABASE_NAME = "users_requests.json"
 STATE_AWAIT_PBN = "await_pbn"
 STATE_AWAIT_PHOTO = "await_photo"
 
+# === ДОБАВОЧНЫЕ СОСТОЯНИЯ =====================================================
+STATE_ADD_CARD_SELECT_CARD   = "add_card_select_card"
+STATE_ADD_CARD_SELECT_HAND   = "add_card_select_hand"
+STATE_MOVE_CARD_SELECT_HAND  = "move_card_select_hand"
+STATE_MOVE_CARD_SELECT_CARD  = "move_card_select_card"
+STATE_MOVE_CARD_SELECT_DEST  = "move_card_select_dest"
+STATE_CONTRACT_CHOOSE_DENOM = "contract_choose_denom"
+STATE_CONTRACT_CHOOSE_FIRST = "contract_choose_first"
+
+
+SUITS = ("S", "H", "D", "C")      # пики, червы, бубны, трефы
+RANKS = ("A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2")
+
+def chunk(seq, size=7):
+    """Разбивает последовательность на куски не больше size элементов."""
+    for i in range(0, len(seq), size):
+        yield seq[i:i+size]
+
+
+def _pretty(card: str) -> str:
+    """'AS' → '♠A', 'TD' → '♦10' (иконки берём из SUIT_ICONS)"""
+    rank = "10" if card[0] == "T" else card[0]
+    return f"{SUIT_ICONS[card[1]]}{rank}"
 
 # === АВТОРИЗАЦИЯ ==============================================================
 
@@ -142,6 +165,60 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === ХЕЛПЕРЫ ДЛЯ КЛАВИАТУР ====================================================
 
+def card_keyboard(cards: list[str]) -> InlineKeyboardMarkup:
+    """Строит клавиатуру из списка карт с символами мастей."""
+    rows = []
+    for suit in SUITS:
+        suit_cards = [c for c in cards if c.endswith(suit)]
+        suit_cards.sort(key=lambda c: RANKS.index(c[0]))  # A-K-Q-…-2
+        for part in chunk(suit_cards, 7):
+            rows.append([
+                InlineKeyboardButton(_pretty(c), callback_data=f"sel_card_{c}")
+                for c in part
+            ])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="cancel_add_move")])
+    return InlineKeyboardMarkup(rows)
+
+
+def hand_keyboard(prompt_back: str = "⬅️ Назад", back_data: str = "cancel_add_move") -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton("North ⬆️",  callback_data="hand_N"),
+            InlineKeyboardButton("East ➡️",   callback_data="hand_E"),
+        ],
+        [
+            InlineKeyboardButton("West ⬅️",   callback_data="hand_W"),
+            InlineKeyboardButton("South ⬇️",  callback_data="hand_S"),
+        ],
+        [InlineKeyboardButton(prompt_back, callback_data=back_data)]
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def contract_denom_keyboard() -> InlineKeyboardMarkup:
+    rows = [[
+        InlineKeyboardButton("♣", callback_data="denom_C"),
+        InlineKeyboardButton("♦", callback_data="denom_D"),
+        InlineKeyboardButton("♥", callback_data="denom_H"),
+        InlineKeyboardButton("♠", callback_data="denom_S"),
+        InlineKeyboardButton("NT", callback_data="denom_NT"),
+    ]]
+    return InlineKeyboardMarkup(rows)
+
+
+def contract_first_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton("North ⬆️",  callback_data="first_N"),
+            InlineKeyboardButton("East ➡️",   callback_data="first_E"),
+        ],
+        [
+            InlineKeyboardButton("West ⬅️",   callback_data="first_W"),
+            InlineKeyboardButton("South ⬇️",  callback_data="first_S"),
+        ],
+    ]
+    return InlineKeyboardMarkup(rows)
+
 def main_menu_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🃏 Анализ расклада", callback_data="menu_analyze")],
@@ -169,12 +246,15 @@ def analyze_result_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("⏪ Повернуть против часовой", callback_data="rotate_ccw"),
-            InlineKeyboardButton("Повернуть по часовой ⏩", callback_data="rotate_cw"),
+            InlineKeyboardButton("Повернуть по часовой ⏩",     callback_data="rotate_cw"),
         ],
         [
-            InlineKeyboardButton("📄 Вывести PBN-строку", callback_data="to_pbn"),
-            InlineKeyboardButton("Принять сдачу ✅", callback_data="accept_result"),
-        ]
+            InlineKeyboardButton("➕ Добавить карту",           callback_data="add_card_start"),
+            InlineKeyboardButton("🔀 Переместить карту",        callback_data="move_card_start"),
+        ],
+        [
+            InlineKeyboardButton("Принять сдачу ✅",            callback_data="accept_result"),
+        ],
     ])
 
 
@@ -211,7 +291,7 @@ def set_logic_from_pbn(context: ContextTypes.DEFAULT_TYPE, pbn: str) -> BridgeLo
     return logic
 
 
-# === КОМАНДЫ ================================================================== 
+# === КОМАНДЫ ==================================================================
 
 @require_auth
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -229,52 +309,56 @@ async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @require_auth
-async def add_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    detector: BridgeCardDetector = context.user_data.get("detector")
-    if not detector:
-        await update.message.reply_text(
-            "⛔ Эта команда доступна только при редактировании распознанной сдачи.\n"
-            "Сначала распознай сдачу по фото или выбери PBN."
-        )
-        return
+async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    detector: BridgeCardDetector | None = context.user_data.get("detector")
+    logic: BridgeLogic | None = context.user_data.get("logic")
 
-    if not context.args:
-        await update.message.reply_text("Формат: /addcard <карта> <рука> (например: /addcard 4h W)")
-        return
+    if detector:
+        try:
+            pbn = detector.to_pbn()
 
-    try:
-        detector.add(" ".join(context.args))
-        sent = await update.message.reply_text(
-            _pre(detector.preview()),
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=analyze_result_markup(),
-        )
-        context.user_data["active_msg_id"] = sent.message_id
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
+            await update.message.reply_text(
+                f"PBN (N, E, S, W):\n{_pre(pbn)}",
+                parse_mode=ParseMode.MARKDOWN
+            )
 
+            sent = await update.message.reply_text(
+                _pre(detector.preview()),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=analyze_result_markup()
+            )
+            context.user_data["active_msg_id"] = sent.message_id
+            return
 
-@require_auth
-async def move_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    detector: BridgeCardDetector = context.user_data.get("detector")
-    if not detector:
-        await update.message.reply_text("⛔ Эта команда доступна только при редактировании распознанной сдачи.")
-        return
+        except Exception as e:
+            await update.message.reply_text(f"Ошибка получения PBN из распознавания: {e}")
+            return
 
-    if not context.args:
-        await update.message.reply_text("Формат: /movecard <карта> <куда> (например: /movecard 4h N)")
-        return
+    if logic:
+        try:
+            pbn = logic.to_pbn()
 
-    try:
-        detector.move(" ".join(context.args))
-        sent = await update.message.reply_text(
-            _pre(detector.preview()),
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=analyze_result_markup(),
-        )
-        context.user_data["active_msg_id"] = sent.message_id
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
+            await update.message.reply_text(
+                f"PBN (N, E, S, W):\n{_pre(pbn)}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+
+            idx  = [c[1] for c in ANALYSIS_COMMANDS].index("display")
+            page = idx // ANALYSIS_CMDS_PER_PAGE
+
+            sent = await update.message.reply_text(
+                _pre(logic.display()),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=analysis_keyboard(page)
+            )
+            context.user_data["active_msg_id"] = sent.message_id
+            return
+
+        except Exception as e:
+            await update.message.reply_text(f"Ошибка получения PBN из логики: {e}")
+            return
+
+    await update.message.reply_text("❌ Нет активного расклада для вывода PBN.")
 
 
 @require_auth
@@ -860,12 +944,16 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @ignore_telegram_edit_errors
 async def analyze_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     data = query.data
 
-    detector: BridgeCardDetector = context.user_data.get("detector")
-    if not detector:
-        await query.edit_message_text("Ошибка: расклад не найден.")
+    detector: BridgeCardDetector | None = context.user_data.get("detector")
+
+    # --- если расклад уже принят -------------------------------------------
+    if detector is None:
+        await query.answer(
+            "Расклад уже принят.\nЗагрузите новый, чтобы снова редактировать.",
+            show_alert=True
+        )
         return
 
     if data == "rotate_ccw":
@@ -907,12 +995,20 @@ async def analyze_result_handler(update: Update, context: ContextTypes.DEFAULT_T
         try:
             pbn = detector.to_pbn()
             logic = set_logic_from_pbn(context, pbn)
+
             context.user_data.pop("detector", None)
             context.user_data["contract_set"] = False
-            await query.message.reply_text(
-                "Расклад принят. Сделайте команду /setcontract <контракт> <первая_рука> (например: /setcontract 3NT N)",
-                parse_mode=None,
+            context.user_data["state"] = STATE_CONTRACT_CHOOSE_DENOM
+            context.user_data["chosen_denom"] = None
+
+            await query.edit_message_text(
+                "Выберите деноминацию контракта:",
+                reply_markup=contract_denom_keyboard(),
+                parse_mode=ParseMode.MARKDOWN  # если нужно
             )
+
+        except ValueError as e:
+            await query.answer(str(e), show_alert=True)
         except Exception as e:
             await query.message.reply_text(f"Ошибка: {e}")
 
@@ -925,10 +1021,7 @@ async def analysis_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if not context.user_data.get("contract_set"):
-        await query.edit_message_text(
-            "⚠️ Сначала задайте контракт командой /setcontract.",
-            reply_markup=None,
-        )
+        await query.answer("Выберите деноминацию контракта", show_alert=True)
         return
 
     logic: BridgeLogic = context.user_data.get("logic")
@@ -962,6 +1055,174 @@ async def analysis_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=analysis_keyboard(page),
         )
+
+
+@require_auth
+@require_fresh_window
+@ignore_telegram_edit_errors
+async def add_move_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data  = query.data
+    detector: BridgeCardDetector | None = context.user_data.get("detector")
+
+    # --- если расклад уже принят -------------------------------------------
+    if detector is None:
+        await query.answer(
+            "Расклад уже принят.\nРедактирование недоступно.",
+            show_alert=True
+        )
+        return
+
+    # --- отмена операции -----------------------------------------------------
+    if data == "cancel_add_move":
+        context.user_data.pop("state", None)
+        context.user_data.pop("pending_card", None)
+        context.user_data.pop("pending_hand_src", None)
+        await query.edit_message_reply_markup(reply_markup=analyze_result_markup())
+        await query.answer("Операция отменена")
+        return
+
+    # --- начало «добавить карту» --------------------------------------------
+    if data == "add_card_start":
+        lost = detector.lost_cards()           # список недостающих карт (str, «7H» и т.п.)
+        if not lost:
+            await query.answer("Нет потерянных карт", show_alert=True)
+            return
+        context.user_data["state"] = STATE_ADD_CARD_SELECT_CARD
+        await query.edit_message_text(
+            "Выберите карту, которую нужно добавить:",
+            reply_markup=card_keyboard(lost),
+        )
+        return
+
+    # --- начало «переместить карту» -----------------------------------------
+    if data == "move_card_start":
+        context.user_data["state"] = STATE_MOVE_CARD_SELECT_HAND
+        await query.edit_message_text(
+            "Из какой руки переместить карту?",
+            reply_markup=hand_keyboard(),
+        )
+        return
+
+    # -----------------------------------------------------------------------
+    state = context.user_data.get("state")
+
+    # === ADD-CARD: выбрана карта ============================================
+    if state == STATE_ADD_CARD_SELECT_CARD and data.startswith("sel_card_"):
+        context.user_data["pending_card"] = data.replace("sel_card_", "")
+        context.user_data["state"] = STATE_ADD_CARD_SELECT_HAND
+        await query.edit_message_text(
+            f"Куда положить {context.user_data['pending_card']}?",
+            reply_markup=hand_keyboard(),
+        )
+        return
+
+    # === ADD-CARD: выбрана рука (конец) =====================================
+    if state == STATE_ADD_CARD_SELECT_HAND and data.startswith("hand_"):
+        hand = data[-1]                      # N/E/S/W
+        card = context.user_data.pop("pending_card")
+        context.user_data.pop("state", None)
+        try:
+            detector.add(f"{card} {hand}")
+            await query.edit_message_text(
+                _pre(detector.preview()),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=analyze_result_markup(),
+            )
+        except Exception as e:
+            await query.answer(f"Ошибка: {e}", show_alert=True)
+        return
+
+    # === MOVE-CARD: выбрана исходная рука ===================================
+    if state == STATE_MOVE_CARD_SELECT_HAND and data.startswith("hand_"):
+        hand_src = data[-1]
+        cards_in_hand = detector.hand_cards(hand_src)   # список карт в руке
+        if not cards_in_hand:
+            await query.answer("В этой руке нет карт", show_alert=True)
+            return
+        context.user_data["pending_hand_src"] = hand_src
+        context.user_data["state"] = STATE_MOVE_CARD_SELECT_CARD
+        await query.edit_message_text(
+            f"Выберите карту из руки {hand_src}:",
+            reply_markup=card_keyboard(cards_in_hand),
+        )
+        return
+
+    # === MOVE-CARD: выбрана карта ===========================================
+    if state == STATE_MOVE_CARD_SELECT_CARD and data.startswith("sel_card_"):
+        context.user_data["pending_card"] = data.replace("sel_card_", "")
+        context.user_data["state"] = STATE_MOVE_CARD_SELECT_DEST
+        await query.edit_message_text(
+            "В какую руку переместить карту?",
+            reply_markup=hand_keyboard(),
+        )
+        return
+
+    # === MOVE-CARD: выбрана целевая рука (конец) ============================
+    if state == STATE_MOVE_CARD_SELECT_DEST and data.startswith("hand_"):
+        hand_dst = data[-1]
+        card     = context.user_data.pop("pending_card")
+        hand_src = context.user_data.pop("pending_hand_src")
+        context.user_data.pop("state", None)
+        try:
+            detector.move(f"{card} {hand_dst}")
+            await query.edit_message_text(
+                _pre(detector.preview()),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=analyze_result_markup(),
+            )
+        except Exception as e:
+            await query.answer(f"Ошибка: {e}", show_alert=True)
+        return
+
+
+# === Flow выбора контракта ================================================
+@require_auth
+@require_fresh_window
+@ignore_telegram_edit_errors
+async def contract_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data  = query.data
+    logic: BridgeLogic | None = context.user_data.get("logic")
+
+    if logic is None:
+        await query.answer("Нет расклада", show_alert=True)
+        return
+
+    # ────────── ШАГ 1: выбор деноминации ──────────
+    if data.startswith("denom_"):
+        token = data.split("_", 1)[1]
+        context.user_data["chosen_denom"] = token
+        context.user_data["state"] = STATE_CONTRACT_CHOOSE_FIRST
+
+        await query.edit_message_text(
+            "Кто делает первый ход?",
+            reply_markup=contract_first_keyboard()
+        )
+        return
+
+    # ────────── ШАГ 2: выбор первой руки ───────────
+    if data.startswith("first_"):
+        first = data.split("_", 1)[1]
+        denom_token = context.user_data.get("chosen_denom")
+        context.user_data.pop("state", None)           # вычистили FSM
+
+        contract_str = "NT" if denom_token == "NT" else denom_token
+        try:
+            logic.set_contract(contract_str, first)    # применяем контракт
+            context.user_data["contract_set"] = True
+        except Exception as e:
+            await query.edit_message_text(f"Ошибка: {e}")
+            return
+
+        await query.edit_message_text("Приступаю к анализу...")
+
+        sent = await query.message.reply_text(
+            _pre(logic.display()),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=analysis_keyboard(0)
+        )
+        context.user_data["active_msg_id"] = sent.message_id
 
 
 # === ТЕКСТОВЫЙ ВВОД ============================================================
@@ -1095,8 +1356,7 @@ def post_init(application: Application):
     return application.bot.set_my_commands([
         BotCommand("start", "Запустить бота"),
         BotCommand("id", "Узнать свой Telegram-ID"),
-        BotCommand("addcard", "Добавить карту в руку"),
-        BotCommand("movecard", "Переместить карту в руку"),
+        BotCommand("pbn", "Вывести PBN-строку текущего расклада"),
         BotCommand("display", "Показать текущий расклад карт"),
         BotCommand("ddtable", "Показать double-dummy таблицу"),
         BotCommand("setcontract", "Задать контракт и первую руку (напр: /setcontract 3NT N)"),
@@ -1125,8 +1385,7 @@ def main():
     # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", show_id))
-    app.add_handler(CommandHandler("addcard", add_card))
-    app.add_handler(CommandHandler("movecard", move_card))
+    app.add_handler(CommandHandler("pbn", cmd_pbn))
     app.add_handler(CommandHandler("display", cmd_display))
     app.add_handler(CommandHandler("ddtable", cmd_ddtable))
     app.add_handler(CommandHandler("setcontract", cmd_setcontract))
@@ -1148,10 +1407,14 @@ def main():
     # Кнопки меню и навигации
     app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(menu_analyze|menu_privacy|menu_thanks|input_pbn|input_photo|back_main|back_analyze|generate_deal)$"))
 
+    app.add_handler(CallbackQueryHandler(add_move_flow_handler, pattern="^(add_card_start|move_card_start|sel_card_.*|hand_[NESW]|cancel_add_move)$"))
+
     # Кнопки анализа расклада (после распознавания)
     app.add_handler(CallbackQueryHandler(analyze_result_handler, pattern="^(rotate_cw|rotate_ccw|accept_result|to_pbn)$"))
 
     app.add_handler(CallbackQueryHandler(analysis_handler, pattern="^analysis_"))
+
+    app.add_handler(CallbackQueryHandler(contract_flow_handler, pattern="^(denom_[CDHS]|denom_NT|first_[NESW])$"))
 
     # === Вот этот хендлер только если В РЕЖИМЕ PBN ===
     app.add_handler(MessageHandler(
