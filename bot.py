@@ -45,6 +45,10 @@ req = HTTPXRequest(connection_pool_size=10, connect_timeout=10.0, read_timeout=6
 ANALYSIS_CMDS_PER_PAGE = 4
 CACHED_REQUESTS_DATABASE_NAME = "users_requests.json"
 
+# === СОСТОЯНИЯ ================================================================
+STATE_AWAIT_PBN = "await_pbn"
+STATE_AWAIT_PHOTO = "await_photo"
+
 
 # === АВТОРИЗАЦИЯ ==============================================================
 
@@ -77,11 +81,11 @@ def ignore_telegram_edit_errors(func):
 
 
 def require_fresh_window(handler):
-    """Старое окно → молча переписываем текст и убираем клавиатуру."""
+    """Декоратор: если это неактуальное окно — показываем сообщение и молча выходим."""
     @wraps(handler)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
-        last_id: int | None = context.user_data.get("active_msg_id")
+        last_id = context.user_data.get("active_msg_id")
 
         if last_id is None or query.message.message_id != last_id:
             try:
@@ -92,11 +96,14 @@ def require_fresh_window(handler):
                 )
             except BadRequest:
                 pass
-            await query.answer()
+            try:
+                await query.answer()
+            except BadRequest:
+                pass
+
             return
 
         return await handler(update, context)
-
     return wrapper
 
 
@@ -190,11 +197,8 @@ def analysis_keyboard(page: int = 0) -> InlineKeyboardMarkup:
         btns.append(nav)
     return InlineKeyboardMarkup(btns)
 
-# === СОСТОЯНИЯ ================================================================
-STATE_AWAIT_PBN = "await_pbn"
-STATE_AWAIT_PHOTO = "await_photo"
 
-# === СОЗДАТЬ / ОБНОВИТЬ BridgeLogic ДЛЯ ПОЛЬЗОВАТЕЛЯ ========================== / ОБНОВИТЬ BridgeLogic ДЛЯ ПОЛЬЗОВАТЕЛЯ ==========================
+# === СОЗДАТЬ / ОБНОВИТЬ BridgeLogic ДЛЯ ПОЛЬЗОВАТЕЛЯ ===========================
 
 def set_logic_from_pbn(context: ContextTypes.DEFAULT_TYPE, pbn: str) -> BridgeLogic:
     """Создаём новый BridgeLogic(PBN) и кладём в user_data.
@@ -269,102 +273,6 @@ async def move_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=analyze_result_markup(),
         )
         context.user_data["active_msg_id"] = sent.message_id
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
-
-
-@require_auth
-async def remove_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    detector: BridgeCardDetector = context.user_data.get("detector")
-    if not detector:
-        await update.message.reply_text("⛔ Эта команда доступна только при редактировании распознанной сдачи.")
-        return
-
-    if not context.args:
-        await update.message.reply_text("Формат: /removecard <карта> <рука> (например: /removecard 4h W)")
-        return
-
-    try:
-        detector.remove(" ".join(context.args))
-        sent = await update.message.reply_text(
-            _pre(detector.preview()),
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=analyze_result_markup(),
-        )
-        context.user_data["active_msg_id"] = sent.message_id
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
-
-
-@require_auth
-async def clockwise(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    detector: BridgeCardDetector = context.user_data.get("detector")
-    if not detector:
-        await update.message.reply_text("⛔ Эта команда доступна только при редактировании сдачи.")
-        return
-
-    detector.clockwise()
-    sent = await update.message.reply_text(
-        _pre(detector.preview()),
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=analyze_result_markup(),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-
-@require_auth
-async def uclockwise(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    detector: BridgeCardDetector = context.user_data.get("detector")
-    if not detector:
-        await update.message.reply_text("⛔ Эта команда доступна только при редактировании сдачи.")
-        return
-
-    detector.uclockwise()
-    sent = await update.message.reply_text(
-        _pre(detector.preview()),
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=analyze_result_markup(),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-
-@require_auth
-async def pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    detector: BridgeCardDetector = context.user_data.get("detector")
-    if not detector:
-        await update.message.reply_text("⛔ Эта команда доступна только при редактировании сдачи.")
-        return
-    try:
-        pbn_str = detector.to_pbn()
-        await update.message.reply_text(f"PBN:\n{_pre(pbn_str)}", parse_mode=ParseMode.MARKDOWN)
-
-        sent = await update.message.reply_text(
-            _pre(detector.preview()),
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=analyze_result_markup(),
-        )
-        context.user_data["active_msg_id"] = sent.message_id
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
-
-
-@require_auth
-async def accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    detector: BridgeCardDetector = context.user_data.get("detector")
-    if not detector:
-        await update.message.reply_text(
-            "⛔ Эта команда доступна только при редактировании сдачи."
-        )
-        return
-    try:
-        pbn = detector.to_pbn()
-        logic = set_logic_from_pbn(context, pbn)
-        context.user_data.pop("detector", None)
-        context.user_data["contract_set"] = False
-        await update.message.reply_text(
-            "Расклад принят. Сделайте команду /setcontract <контракт> <первая_рука> (например: /setcontract 3NT N)",
-            parse_mode=ParseMode.MARKDOWN,
-        )
     except Exception as e:
         await update.message.reply_text(f"Ошибка: {e}")
 
@@ -1189,11 +1097,6 @@ def post_init(application: Application):
         BotCommand("id", "Узнать свой Telegram-ID"),
         BotCommand("addcard", "Добавить карту в руку"),
         BotCommand("movecard", "Переместить карту в руку"),
-        BotCommand("removecard", "Удалить карту из руки"),
-        BotCommand("clockwise", "Повернуть сдачу по часовой"),
-        BotCommand("uclockwise", "Повернуть сдачу против часовой"),
-        BotCommand("pbn", "Вывести PBN-строку текущей сдачи"),
-        BotCommand("accept", "Принять текущую сдачу"),
         BotCommand("display", "Показать текущий расклад карт"),
         BotCommand("ddtable", "Показать double-dummy таблицу"),
         BotCommand("setcontract", "Задать контракт и первую руку (напр: /setcontract 3NT N)"),
@@ -1224,11 +1127,6 @@ def main():
     app.add_handler(CommandHandler("id", show_id))
     app.add_handler(CommandHandler("addcard", add_card))
     app.add_handler(CommandHandler("movecard", move_card))
-    app.add_handler(CommandHandler("removecard", remove_card))
-    app.add_handler(CommandHandler("clockwise", clockwise))
-    app.add_handler(CommandHandler("uclockwise", uclockwise))
-    app.add_handler(CommandHandler("pbn", pbn))
-    app.add_handler(CommandHandler("accept", accept))
     app.add_handler(CommandHandler("display", cmd_display))
     app.add_handler(CommandHandler("ddtable", cmd_ddtable))
     app.add_handler(CommandHandler("setcontract", cmd_setcontract))
