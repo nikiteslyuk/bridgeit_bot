@@ -193,12 +193,10 @@ class BridgeLogic:
 
         return [f"{card_rank(c)}{card_suit(c)}" for c in allowed]
 
-
     # ───── вывод рук + указатель хода ─────
     def display(self) -> str:
         suits = ("S", "H", "D", "C")
 
-        # ---------- формируем текст мастей ----------
         def suit_line(pl, s):
             ranks = sorted(
                 (card_rank(c) for c in self.deal[pl] if card_suit(c) == s),
@@ -211,68 +209,63 @@ class BridgeLogic:
             for pl in (Player.north, Player.east, Player.south, Player.west)
         }
 
-        # ---------- расчёт ширин слева ----------
+        if not hasattr(self, "_fixed_west_hand_w"):
+            WEST_GAP = 3
+            self._fixed_west_hand_w = max(len(blk[Player.west][s]) for s in suits)
+            self._fixed_side_w      = self._fixed_west_hand_w + WEST_GAP
+
         WEST_GAP    = 3
-        WEST_HAND_W = max(len(blk[Player.west][s]) for s in suits)
-        SIDE_W      = WEST_HAND_W + WEST_GAP
+        WEST_HAND_W = self._fixed_west_hand_w
+        SIDE_W      = self._fixed_side_w
+        MID_W       = 13
+        EAST_GAP    = WEST_GAP
+        e_shift     = " " * EAST_GAP
 
-        # ---------- параметры центра ----------
-        MID_W    = 13
-        EAST_GAP = WEST_GAP
-        e_shift  = " " * EAST_GAP
-
-        # ---------- текущее состояние взятки ----------
-        seq = self._current                     # показываем ТОЛЬКО незавершённую взятку
+        seq = self._current
         arrow = {Player.north: "↑", Player.east: "→",
                  Player.south: "↓", Player.west: "←"}
 
-        center_rows = [" " * MID_W for _ in range(4)]          # строки N-E-W-S
+        center_rows = [" " * MID_W for _ in range(4)]
 
-        # 1. карты уже выложенные в этой взятке
         for pl, card in seq:
             tok = f"{arrow[pl]}{card}" if pl is Player.west else f"{card}{arrow[pl]}"
-            row = {Player.north: 0, Player.east: 1, Player.west: 2, Player.south: 3}[pl]
+            row = {Player.north: 0, Player.east: 1,
+                   Player.west: 2, Player.south: 3}[pl]
             if pl is Player.west:
                 center_rows[row] = tok.ljust(MID_W)
             elif pl is Player.east:
                 center_rows[row] = tok.rjust(MID_W - 1) + " "
-            else:                              # N или S
+            else:
                 center_rows[row] = tok.center(MID_W)
 
-        # 2. стрелка-указатель «чей ход»
-        if any(len(self.deal[p]) for p in Player):             # ещё не конец сдачи
+        if any(len(self.deal[p]) for p in Player):
             cur_pl = self.current_player()
-            tok = arrow[cur_pl]                                # одиночная стрелка
+            tok = arrow[cur_pl]
             row = {Player.north: 0, Player.east: 1,
                    Player.west: 2,  Player.south: 3}[cur_pl]
             if cur_pl is Player.west:
                 center_rows[row] = tok.ljust(MID_W)
             elif cur_pl is Player.east:
                 center_rows[row] = tok.rjust(MID_W - 1) + " "
-            else:                                              # N или S
+            else:
                 center_rows[row] = tok.center(MID_W)
 
-        # ---------- вычисляем отступ North / South ----------
-        tok_len = len(str(seq[0][1])) + 1 if seq else 1        # 1 — длина одиночной стрелки
-        left_pad   = (MID_W - tok_len) // 2
+        tok_len   = len(str(seq[0][1])) + 1 if seq else 1
+        left_pad  = (MID_W - tok_len) // 2
         spacing_NS = " " * (SIDE_W + left_pad)
 
-        # ---------- вывод ----------
         lines: list[str] = []
 
-        # North
         for s in suits:
             lines.append(spacing_NS + blk[Player.north][s])
         lines.append("")
 
-        # West | центр | East
         for idx, s in enumerate(suits):
             w_hand = blk[Player.west][s].ljust(WEST_HAND_W) + " " * WEST_GAP
             e_hand = e_shift + blk[Player.east][s]
             lines.append(f"{w_hand}{center_rows[idx]}{e_hand}")
         lines.append("")
 
-        # South
         for s in suits:
             lines.append(spacing_NS + blk[Player.south][s])
 
@@ -803,8 +796,6 @@ if __name__ == "__main__":
     # pbn = "AKQJT98765432... .AKQJT98765432.. ...AKQJT98765432 ..AKQJT98765432."
     g = BridgeLogic(pbn)
     g.set_contract('s', 'w')
-    print(g.legal_moves())
-    g.play_optimal_card()
-    print(g.legal_moves())
-
+    print(g.display())
+    g.play_optimal_to_end()
     print(g.display())

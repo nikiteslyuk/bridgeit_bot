@@ -46,8 +46,7 @@ STATE_MOVE_CARD_SELECT_DEST  = "move_card_select_dest"
 STATE_CONTRACT_CHOOSE_DENOM = "contract_choose_denom"
 STATE_CONTRACT_CHOOSE_FIRST = "contract_choose_first"
 
-
-SUITS = ("S", "H", "D", "C")      # пики, червы, бубны, трефы
+SUITS = ("S", "H", "D", "C")
 RANKS = ("A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2")
 
 def chunk(seq, size=7):
@@ -153,8 +152,6 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === ХЕЛПЕРЫ ДЛЯ КЛАВИАТУР ====================================================
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
 def play_card_keyboard(cards: list[str]) -> InlineKeyboardMarkup | None:
     """
     Формирует клавиатуру-руку из списка строк-карт.
@@ -189,7 +186,6 @@ def play_card_keyboard(cards: list[str]) -> InlineKeyboardMarkup | None:
             ])
 
     return InlineKeyboardMarkup(rows) if rows else None
-
 
 
 def card_keyboard(cards: list[str]) -> InlineKeyboardMarkup:
@@ -701,7 +697,6 @@ async def play_card_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-
 # === Flow выбора контракта ================================================
 @require_auth
 @require_fresh_window
@@ -753,7 +748,6 @@ async def contract_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
         )
         context.user_data["active_msg_id"] = sent.message_id
         return
-
 
 # === ТЕКСТОВЫЙ ВВОД ============================================================
 
