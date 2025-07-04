@@ -152,40 +152,43 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === ХЕЛПЕРЫ ДЛЯ КЛАВИАТУР ====================================================
 
-def play_card_keyboard(cards: list[str]) -> InlineKeyboardMarkup | None:
+# ───── клавиатура анализа (карты / функции) ─────
+def make_board_keyboard(logic: BridgeLogic, show_funcs: bool = False) -> InlineKeyboardMarkup:
     """
-    Формирует клавиатуру-руку из списка строк-карт.
-    • callback_data: play_<CARD>
-    • Масти выводятся в порядке SUITS = ('S', 'H', 'D', 'C')
-    • ≤ 7 карт в строке
+    • Всегда есть верхний ряд: [Оптимальный ход] [Отменить ход]
+    • Всегда есть нижняя кнопка: [...]
+    • В «карточном» режиме между ними выводятся карты текущего игрока.
+    • В «функциональном» режиме вместо карт выводится:
+         [История] [DD-таблица] [Доиграть до конца]
     """
-
-    # --- вспомогательная функция -------------------------------------------
-    def get_suit(tok: str) -> str:
-        """
-        Возвращает букву масти 'S'/'H'/'D'/'C' для строки-карты
-        ('AS', '♠A', 'A♠' и т.п.).
-        """
-        tok = tok.replace("\ufe0f", "")
-        if len(tok) == 2 and tok[1] in SUITS:
-            return tok[1]
-
-        icon = tok[0] if tok[0] in ICON2LTR else tok[-1]
-        return ICON2LTR.get(icon, "?")
-
     rows: list[list[InlineKeyboardButton]] = []
 
-    for suit in SUITS:
-        suit_cards = [c for c in cards if get_suit(c) == suit]
-        suit_cards.sort(key=lambda c: RANKS.index(card_rank(c)))
+    rows.append([
+        InlineKeyboardButton("Оптимальный ход", callback_data="act_optimal"),
+        InlineKeyboardButton("Отменить ход",     callback_data="act_undo"),
+    ])
 
-        for part in chunk(suit_cards, 7):
-            rows.append([
-                InlineKeyboardButton(_pretty(c), callback_data=f"play_{c}")
-                for c in part
-            ])
+    if show_funcs:
+        rows.append([
+            InlineKeyboardButton("История",        callback_data="act_history"),
+            InlineKeyboardButton("DD-таблица",     callback_data="act_ddtable"),
+            InlineKeyboardButton("Доиграть до конца", callback_data="act_playtoend"),
+        ])
+    else:
+        moves = logic.legal_moves()
+        for suit in SUITS:
+            suit_cards = [c for c in moves if c.endswith(suit)]
+            suit_cards.sort(key=lambda c: RANKS.index(c[0]))
+            for part in chunk(suit_cards, 7):
+                rows.append([
+                    InlineKeyboardButton(_pretty(c), callback_data=f"play_{c}")
+                    for c in part
+                ])
 
-    return InlineKeyboardMarkup(rows) if rows else None
+    # ─── нижний ряд ───
+    rows.append([InlineKeyboardButton("…", callback_data="act_toggle")])
+
+    return InlineKeyboardMarkup(rows)
 
 
 def card_keyboard(cards: list[str]) -> InlineKeyboardMarkup:
@@ -241,6 +244,7 @@ def contract_first_keyboard() -> InlineKeyboardMarkup:
         ],
     ]
     return InlineKeyboardMarkup(rows)
+
 
 def main_menu_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -315,55 +319,43 @@ async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     detector: BridgeCardDetector | None = context.user_data.get("detector")
     logic: BridgeLogic | None = context.user_data.get("logic")
-
-    # ────────── 1. Есть детектор (расклад ещё редактируется) ──────────
     if detector:
         try:
             pbn = detector.to_pbn()
-
             await update.message.reply_text(
                 f"PBN (N, E, S, W):\n{_pre(pbn)}",
                 parse_mode=ParseMode.MARKDOWN
             )
-
             sent = await update.message.reply_text(
                 _pre(detector.preview()),
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=analyze_result_markup()          # старая клавиатура редактирования
+                reply_markup=analyze_result_markup()
             )
             context.user_data["active_msg_id"] = sent.message_id
             return
-
         except Exception as e:
             await update.message.reply_text(f"Ошибка получения PBN из распознавания: {e}")
             return
-
-    # ────────── 2. Есть принятый расклад (logic) ──────────
     if logic:
         try:
             pbn = logic.to_pbn()
-
             await update.message.reply_text(
                 f"PBN (N, E, S, W):\n{_pre(pbn)}",
                 parse_mode=ParseMode.MARKDOWN
             )
-
+            context.user_data["show_funcs"] = False
             board_view = _pre(logic.display())
-            kb = play_card_keyboard(logic.legal_moves())      # новая клавиатура-рука
-
+            kb = make_board_keyboard(logic, False)
             sent = await update.message.reply_text(
                 board_view,
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=kb                                # None, если ходов нет
+                reply_markup=kb
             )
             context.user_data["active_msg_id"] = sent.message_id
             return
-
         except Exception as e:
             await update.message.reply_text(f"Ошибка получения PBN из логики: {e}")
             return
-
-    # ────────── 3. Ничего нет ──────────
     await update.message.reply_text("❌ Нет активного расклада для вывода PBN.")
 
 
@@ -662,39 +654,91 @@ async def add_move_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
 @require_fresh_window
 @ignore_telegram_edit_errors
 async def play_card_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обрабатывает callback вида 'play_<CARD>'.
-    Делает ход, перерисовывает позицию и клавиатуру.
-    Если у следующего игрока ходов нет – клавиатура исчезает.
-    """
     query = update.callback_query
     await query.answer()
-
     logic: BridgeLogic | None = context.user_data.get("logic")
     if logic is None:
         await query.answer("Нет активной сдачи.", show_alert=True)
         return
-
-    card_code = query.data.replace("play_", "")  # например 'AS'
-
+    card_code = query.data.replace("play_", "")
     try:
         notice = logic.play_card(card_code)
     except ValueError as e:
         await query.answer(str(e), show_alert=True)
         return
-
-    # короткое всплывающее сообщение
     await query.answer(notice, show_alert=False)
-
+    context.user_data["show_funcs"] = False
     board_view = _pre(logic.display())
-    moves = logic.legal_moves()
-    kb = play_card_keyboard(moves)
-
+    kb = make_board_keyboard(logic, False)
     await query.edit_message_text(
         board_view,
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=kb
     )
+
+
+@require_auth
+@require_fresh_window
+@ignore_telegram_edit_errors
+async def analysis_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает act_* callbacks и обновляет позицию / клавиатуру."""
+    query = update.callback_query
+    data  = query.data
+    logic: BridgeLogic | None = context.user_data.get("logic")
+    if logic is None:
+        await query.answer("Нет активной сдачи.", show_alert=True)
+        return
+
+    context.user_data["show_funcs"] = False
+    need_redraw = True
+
+    if data == "act_optimal":
+        txt = logic.play_optimal_card()
+        await query.answer(txt, show_alert=False)
+
+    elif data == "act_undo":
+        txt = logic.undo_last_card()
+        await query.answer(txt, show_alert=False)
+
+    elif data == "act_playtoend":
+        logic.play_optimal_to_end()
+        await query.answer("Доиграли до конца", show_alert=False)
+
+    elif data == "act_toggle":
+        context.user_data["show_funcs"] = not context.user_data.get("show_funcs", False)
+        need_redraw = False
+
+    elif data == "act_history":
+        txt = _pre(logic.show_history())
+        back_kb = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("⬅️ Назад", callback_data="act_back")]]
+        )
+        await query.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb)
+        need_redraw = False
+
+    elif data == "act_ddtable":
+        txt = _pre(logic.dd_table())
+        back_kb = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("⬅️ Назад", callback_data="act_back")]]
+        )
+        await query.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb)
+        need_redraw = False
+
+    elif data == "act_back":
+        await query.message.delete()
+        need_redraw = True
+
+    main_msg_id = context.user_data.get("active_msg_id")
+    if need_redraw and main_msg_id:
+        board_view = _pre(logic.display())
+        kb = make_board_keyboard(logic, context.user_data.get("show_funcs", False))
+        await context.bot.edit_message_text(
+            chat_id=query.message.chat_id,
+            message_id=main_msg_id,
+            text=board_view,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb
+        )
 
 
 # === Flow выбора контракта ================================================
@@ -703,31 +747,24 @@ async def play_card_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @ignore_telegram_edit_errors
 async def contract_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    data  = query.data
+    data = query.data
     logic: BridgeLogic | None = context.user_data.get("logic")
-
     if logic is None:
         await query.answer("Нет расклада", show_alert=True)
         return
-
-    # ────────── ШАГ 1: выбор деноминации ──────────
     if data.startswith("denom_"):
         token = data.split("_", 1)[1]
         context.user_data["chosen_denom"] = token
         context.user_data["state"] = STATE_CONTRACT_CHOOSE_FIRST
-
         await query.edit_message_text(
             "Кто делает первый ход?",
             reply_markup=contract_first_keyboard()
         )
         return
-
-    # ────────── ШАГ 2: выбор первой руки ───────────
     if data.startswith("first_"):
         first = data.split("_", 1)[1]
         denom_token = context.user_data.get("chosen_denom")
-        context.user_data.pop("state", None)  # очищаем FSM
-
+        context.user_data.pop("state", None)
         contract_str = "NT" if denom_token == "NT" else denom_token
         try:
             logic.set_contract(contract_str, first)
@@ -735,19 +772,17 @@ async def contract_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as e:
             await query.edit_message_text(f"Ошибка: {e}")
             return
-
         await query.edit_message_text("Приступаю к анализу...")
-
+        context.user_data["show_funcs"] = False
         board_view = _pre(logic.display())
-        kb = play_card_keyboard(logic.legal_moves())
-
+        kb = make_board_keyboard(logic, False)
         sent = await query.message.reply_text(
             board_view,
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=kb
         )
         context.user_data["active_msg_id"] = sent.message_id
-        return
+
 
 # === ТЕКСТОВЫЙ ВВОД ============================================================
 
@@ -885,14 +920,15 @@ def main():
     app.add_handler(CommandHandler("id", show_id))
     app.add_handler(CommandHandler("pbn", cmd_pbn))
 
-    # app.add_handler(CommandHandler("ddtable", cmd_ddtable))
+    # app.add_handler(CommandHandler("playoptimalcard", cmd_playoptimalcard))
     # app.add_handler(CommandHandler("optimalmove", cmd_optimalmove))
-    # app.add_handler(CommandHandler("showmoveoptions", cmd_showmoveoptions))
-    # app.add_handler(CommandHandler("undolasttrick", cmd_undolasttrick))
-    # app.add_handler(CommandHandler("gototrick", cmd_gototrick))
+
     # app.add_handler(CommandHandler("showhistory", cmd_showhistory))
     # app.add_handler(CommandHandler("playoptimaltoend", cmd_playoptimaltoend))
-    # app.add_handler(CommandHandler("playoptimalcard", cmd_playoptimalcard))
+    # app.add_handler(CommandHandler("ddtable", cmd_ddtable))
+
+    # app.add_handler(CommandHandler("showmoveoptions", cmd_showmoveoptions))
+    # app.add_handler(CommandHandler("gototrick", cmd_gototrick))
 
     # Кнопки меню и навигации
     app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(menu_analyze|menu_privacy|menu_thanks|input_pbn|input_photo|back_main|back_analyze|generate_deal)$"))
@@ -914,6 +950,9 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_photo_input))
 
     app.add_handler(CallbackQueryHandler(play_card_handler, pattern="^play_"))
+    app.add_handler(CallbackQueryHandler(
+        analysis_action_handler,
+        pattern="^act_(optimal|undo|toggle|history|ddtable|playtoend|back)$"))
 
     # === Последний — ловит вообще всё ===
     app.add_handler(MessageHandler(filters.ALL, unknown_message))
