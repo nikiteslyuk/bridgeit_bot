@@ -21,7 +21,7 @@ from telegram.request import HTTPXRequest
 
 
 
-from logic import BridgeLogic, SUIT_ICONS
+from logic import BridgeLogic, card_rank, SUIT_ICONS, ICON2LTR
 from detection import BridgeCardDetector
 os.makedirs("img", exist_ok=True)
 
@@ -30,19 +30,7 @@ TOKEN = "7976805123:AAHpYOm43hazvkXUlDY-q4X9US18upq9uak"
 AUTHORIZED_ID = [375025446, 855302541, 5458141225]
 UNLIMITED_PHOTO_ID = [375025446, 855302541]
 logging.basicConfig(level=logging.INFO)
-ANALYSIS_COMMANDS = [
-    ("Показать расклад", "display"),
-    ("Текущий игрок", "current_player"),
-    ("Отмена последней взятки", "undo_last_trick"),
-    ("Показать историю", "show_history"),
-    ("Показать DD-таблицу", "dd_table"),
-    ("Сыграть оптимально", "play_optimal_card"),
-    ("Сыграть оптимальную взятку", "play_optimal_trick"),
-    ("Сыграть оптимально до конца", "play_optimal_to_end"),
-    ("Показать текущую руку", "show_current_hand"),
-]
 req = HTTPXRequest(connection_pool_size=10, connect_timeout=10.0, read_timeout=60.0, write_timeout=60.0, pool_timeout=10.0)
-ANALYSIS_CMDS_PER_PAGE = 4
 CACHED_REQUESTS_DATABASE_NAME = "users_requests.json"
 
 # === СОСТОЯНИЯ ================================================================
@@ -165,6 +153,45 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === ХЕЛПЕРЫ ДЛЯ КЛАВИАТУР ====================================================
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+def play_card_keyboard(cards: list[str]) -> InlineKeyboardMarkup | None:
+    """
+    Формирует клавиатуру-руку из списка строк-карт.
+    • callback_data: play_<CARD>
+    • Масти выводятся в порядке SUITS = ('S', 'H', 'D', 'C')
+    • ≤ 7 карт в строке
+    """
+
+    # --- вспомогательная функция -------------------------------------------
+    def get_suit(tok: str) -> str:
+        """
+        Возвращает букву масти 'S'/'H'/'D'/'C' для строки-карты
+        ('AS', '♠A', 'A♠' и т.п.).
+        """
+        tok = tok.replace("\ufe0f", "")
+        if len(tok) == 2 and tok[1] in SUITS:
+            return tok[1]
+
+        icon = tok[0] if tok[0] in ICON2LTR else tok[-1]
+        return ICON2LTR.get(icon, "?")
+
+    rows: list[list[InlineKeyboardButton]] = []
+
+    for suit in SUITS:
+        suit_cards = [c for c in cards if get_suit(c) == suit]
+        suit_cards.sort(key=lambda c: RANKS.index(card_rank(c)))
+
+        for part in chunk(suit_cards, 7):
+            rows.append([
+                InlineKeyboardButton(_pretty(c), callback_data=f"play_{c}")
+                for c in part
+            ])
+
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+
 def card_keyboard(cards: list[str]) -> InlineKeyboardMarkup:
     """Строит клавиатуру из списка карт с символами мастей."""
     rows = []
@@ -258,26 +285,6 @@ def analyze_result_markup() -> InlineKeyboardMarkup:
     ])
 
 
-def analysis_keyboard(page: int = 0) -> InlineKeyboardMarkup:
-    total = len(ANALYSIS_COMMANDS)
-    per_page = ANALYSIS_CMDS_PER_PAGE
-    start = page * per_page
-    end = start + per_page
-    btns = [
-        [InlineKeyboardButton(text, callback_data=f"analysis_{cmd}")]
-        for text, cmd in ANALYSIS_COMMANDS[start:end]
-    ]
-
-    nav = []
-    if start > 0:
-        nav.append(InlineKeyboardButton("⬅️", callback_data=f"analysis_page_{page-1}"))
-    if end < total:
-        nav.append(InlineKeyboardButton("➡️", callback_data=f"analysis_page_{page+1}"))
-    if nav:
-        btns.append(nav)
-    return InlineKeyboardMarkup(btns)
-
-
 # === СОЗДАТЬ / ОБНОВИТЬ BridgeLogic ДЛЯ ПОЛЬЗОВАТЕЛЯ ===========================
 
 def set_logic_from_pbn(context: ContextTypes.DEFAULT_TYPE, pbn: str) -> BridgeLogic:
@@ -313,6 +320,7 @@ async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     detector: BridgeCardDetector | None = context.user_data.get("detector")
     logic: BridgeLogic | None = context.user_data.get("logic")
 
+    # ────────── 1. Есть детектор (расклад ещё редактируется) ──────────
     if detector:
         try:
             pbn = detector.to_pbn()
@@ -325,7 +333,7 @@ async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sent = await update.message.reply_text(
                 _pre(detector.preview()),
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=analyze_result_markup()
+                reply_markup=analyze_result_markup()          # старая клавиатура редактирования
             )
             context.user_data["active_msg_id"] = sent.message_id
             return
@@ -334,6 +342,7 @@ async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Ошибка получения PBN из распознавания: {e}")
             return
 
+    # ────────── 2. Есть принятый расклад (logic) ──────────
     if logic:
         try:
             pbn = logic.to_pbn()
@@ -343,13 +352,13 @@ async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.MARKDOWN
             )
 
-            idx  = [c[1] for c in ANALYSIS_COMMANDS].index("display")
-            page = idx // ANALYSIS_CMDS_PER_PAGE
+            board_view = _pre(logic.display())
+            kb = play_card_keyboard(logic.legal_moves())      # новая клавиатура-рука
 
             sent = await update.message.reply_text(
-                _pre(logic.display()),
+                board_view,
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=analysis_keyboard(page)
+                reply_markup=kb                                # None, если ходов нет
             )
             context.user_data["active_msg_id"] = sent.message_id
             return
@@ -358,458 +367,8 @@ async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Ошибка получения PBN из логики: {e}")
             return
 
+    # ────────── 3. Ничего нет ──────────
     await update.message.reply_text("❌ Нет активного расклада для вывода PBN.")
-
-
-# ---------------------------------------------------------------------------
-# Показать расклад
-# ---------------------------------------------------------------------------
-@require_auth
-async def cmd_display(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-
-    text = _pre(logic.display())
-    idx = [c[1] for c in ANALYSIS_COMMANDS].index("display")
-    page = idx // ANALYSIS_CMDS_PER_PAGE
-
-    sent = await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=analysis_keyboard(page),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-
-# ---------------------------------------------------------------------------
-# Double-dummy таблица
-# ---------------------------------------------------------------------------
-@require_auth
-async def cmd_ddtable(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # if not context.user_data.get("contract_set"):
-    #     await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
-    #     return
-
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-
-    text = _pre(logic.dd_table())
-    idx = [c[1] for c in ANALYSIS_COMMANDS].index("dd_table")
-    page = idx // ANALYSIS_CMDS_PER_PAGE
-
-    sent = await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=analysis_keyboard(page),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-
-# ---------------------------------------------------------------------------
-# Текущий игрок
-# ---------------------------------------------------------------------------
-@require_auth
-async def cmd_currentplayer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("contract_set"):
-        await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
-        return
-
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-
-    text = f"Текущий игрок: {logic.current_player()}"
-    idx = [c[1] for c in ANALYSIS_COMMANDS].index("current_player")
-    page = idx // ANALYSIS_CMDS_PER_PAGE
-
-    sent = await update.message.reply_text(
-        text,
-        reply_markup=analysis_keyboard(page),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-
-# ---------------------------------------------------------------------------
-# Оптимальный ход
-# ---------------------------------------------------------------------------
-@require_auth
-async def cmd_optimalmove(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("contract_set"):
-        await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
-        return
-
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-
-    try:
-
-        text = f"Оптимальный ход: {logic.optimal_move()}"
-    except Exception as e:
-        text = f"Ошибка: {e}"
-
-    idx = [c[1] for c in ANALYSIS_COMMANDS].index("play_optimal_card")
-    page = idx // ANALYSIS_CMDS_PER_PAGE
-
-    sent = await update.message.reply_text(
-        text,
-        reply_markup=analysis_keyboard(page),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-
-# ---------------------------------------------------------------------------
-# Показать варианты ходов
-# ---------------------------------------------------------------------------
-@require_auth
-async def cmd_showmoveoptions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("contract_set"):
-        await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
-        return
-
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-
-    try:
-        text = _pre(logic.show_move_options())
-    except Exception as e:
-        text = f"Ошибка: {e}"
-
-    sent = await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=analysis_keyboard(0),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-
-# ---------------------------------------------------------------------------
-# Сыграть карту
-# ---------------------------------------------------------------------------
-@require_auth
-async def cmd_playcard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("contract_set"):
-        await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
-        return
-
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-
-    if not context.args:
-        await update.message.reply_text("Формат: /playcard <карта> (пример: /playcard 7h)")
-        return
-
-    try:
-        text = logic.play_card(context.args[0])
-    except Exception as e:
-        text = f"Ошибка: {e}"
-
-    idx = [c[1] for c in ANALYSIS_COMMANDS].index("play_optimal_card")
-    page = idx // ANALYSIS_CMDS_PER_PAGE
-
-    sent = await update.message.reply_text(
-        text,
-        reply_markup=analysis_keyboard(page),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-
-# ---------------------------------------------------------------------------
-# Сыграть взятку
-# ---------------------------------------------------------------------------
-@require_auth
-async def cmd_playtrick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("contract_set"):
-        await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
-        return
-
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-
-    if len(context.args) < 4:
-        await update.message.reply_text("Формат: /playtrick <карта1> <карта2> <карта3> <карта4>")
-        return
-
-    try:
-        text = logic.play_trick(" ".join(context.args[:4]))
-    except Exception as e:
-        text = f"Ошибка: {e}"
-
-    idx = [c[1] for c in ANALYSIS_COMMANDS].index("play_optimal_trick")
-    page = idx // ANALYSIS_CMDS_PER_PAGE
-
-    sent = await update.message.reply_text(
-        text,
-        reply_markup=analysis_keyboard(page),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-
-# ---------------------------------------------------------------------------
-# Отменить последнюю взятку
-# ---------------------------------------------------------------------------
-@require_auth
-async def cmd_undolasttrick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("contract_set"):
-        await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
-        return
-
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-
-    text = logic.undo_last_trick()
-
-    idx = [c[1] for c in ANALYSIS_COMMANDS].index("undo_last_trick")
-    page = idx // ANALYSIS_CMDS_PER_PAGE
-
-    sent = await update.message.reply_text(
-        text,
-        reply_markup=analysis_keyboard(page),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-
-# ---------------------------------------------------------------------------
-# Перейти к взятке
-# ---------------------------------------------------------------------------
-@require_auth
-async def cmd_gototrick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("contract_set"):
-        await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
-        return
-
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-
-    if len(context.args) < 1:
-        await update.message.reply_text("Формат: /gototrick <номер>")
-        return
-
-    try:
-        text = logic.goto_trick(int(context.args[0]))
-    except Exception as e:
-        text = f"Ошибка: {e}"
-
-    sent = await update.message.reply_text(
-        text,
-        reply_markup=analysis_keyboard(0),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-
-# ---------------------------------------------------------------------------
-# Показать историю
-# ---------------------------------------------------------------------------
-@require_auth
-async def cmd_showhistory(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("contract_set"):
-        await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
-        return
-
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-
-    text = _pre(logic.show_history())
-
-    idx = [c[1] for c in ANALYSIS_COMMANDS].index("show_history")
-    page = idx // ANALYSIS_CMDS_PER_PAGE
-
-    sent = await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=analysis_keyboard(page),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-
-# ---------------------------------------------------------------------------
-# Доиграть до конца оптимально
-# ---------------------------------------------------------------------------
-@require_auth
-async def cmd_playoptimaltoend(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("contract_set"):
-        await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
-        return
-
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-
-    logic.play_optimal_to_end()
-    text = "Доигрыш до конца выполнен."
-
-    idx = [c[1] for c in ANALYSIS_COMMANDS].index("play_optimal_to_end")
-    page = idx // ANALYSIS_CMDS_PER_PAGE
-
-    sent = await update.message.reply_text(
-        text,
-        reply_markup=analysis_keyboard(page),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-
-# ---------------------------------------------------------------------------
-# Показать текущую руку
-# ---------------------------------------------------------------------------
-@require_auth
-async def cmd_showcurrenthand(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("contract_set"):
-        await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
-        return
-
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-
-    text = _pre(logic.show_current_hand())
-
-    idx = [c[1] for c in ANALYSIS_COMMANDS].index("show_current_hand")
-    page = idx // ANALYSIS_CMDS_PER_PAGE
-
-    sent = await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=analysis_keyboard(page),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-
-# ---------------------------------------------------------------------------
-# Перейти к карте во взятке
-# ---------------------------------------------------------------------------
-@require_auth
-async def cmd_gotocard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("contract_set"):
-        await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
-        return
-
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-
-    if len(context.args) < 2:
-        await update.message.reply_text("Формат: /gotocard <номер_взятки> <номер_карты>")
-        return
-
-    try:
-        text = logic.goto_card(int(context.args[0]), int(context.args[1]))
-    except Exception as e:
-        text = f"Ошибка: {e}"
-
-    sent = await update.message.reply_text(
-        text,
-        reply_markup=analysis_keyboard(0),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-
-# ---------------------------------------------------------------------------
-# Сыграть оптимальную карту
-# ---------------------------------------------------------------------------
-@require_auth
-async def cmd_playoptimalcard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("contract_set"):
-        await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
-        return
-
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-
-    text = logic.play_optimal_card()
-
-    idx = [c[1] for c in ANALYSIS_COMMANDS].index("play_optimal_card")
-    page = idx // ANALYSIS_CMDS_PER_PAGE
-
-    sent = await update.message.reply_text(
-        text,
-        reply_markup=analysis_keyboard(page),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-
-# ---------------------------------------------------------------------------
-# Сыграть оптимальную взятку
-# ---------------------------------------------------------------------------
-@require_auth
-async def cmd_playoptimaltrick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("contract_set"):
-        await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
-        return
-
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-
-    text = logic.play_optimal_trick()
-
-    idx = [c[1] for c in ANALYSIS_COMMANDS].index("play_optimal_trick")
-    page = idx // ANALYSIS_CMDS_PER_PAGE
-
-    sent = await update.message.reply_text(
-        text,
-        reply_markup=analysis_keyboard(page),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-
-# ---------------------------------------------------------------------------
-# Сыграть N оптимальных взяток
-# ---------------------------------------------------------------------------
-@require_auth
-async def cmd_playoptimaltricks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("contract_set"):
-        await update.message.reply_text("Сначала задайте контракт командой /setcontract.")
-        return
-
-    logic: BridgeLogic = context.user_data.get("logic")
-    if not logic:
-        await update.message.reply_text("Сначала загрузите сдачу.")
-        return
-
-    if len(context.args) < 1:
-        await update.message.reply_text("Формат: /playoptimaltricks <сколько_взяток>")
-        return
-
-    try:
-        n = int(context.args[0])
-        text = logic.play_optimal_tricks(n) or "Взятки разыграны."
-    except Exception as e:
-        text = f"Ошибка: {e}"
-
-    idx = [c[1] for c in ANALYSIS_COMMANDS].index("play_optimal_trick")
-    page = idx // ANALYSIS_CMDS_PER_PAGE
-
-    sent = await update.message.reply_text(
-        text,
-        reply_markup=analysis_keyboard(page),
-    )
-    context.user_data["active_msg_id"] = sent.message_id
-
-# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===================================================
 
 
 async def russian_precisedelta(delta: datetime.timedelta):
@@ -987,50 +546,6 @@ async def analyze_result_handler(update: Update, context: ContextTypes.DEFAULT_T
 @require_auth
 @require_fresh_window
 @ignore_telegram_edit_errors
-async def analysis_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
-
-    if not context.user_data.get("contract_set"):
-        await query.answer("Выберите деноминацию контракта", show_alert=True)
-        return
-
-    logic: BridgeLogic = context.user_data.get("logic")
-    if logic is None:
-        await query.edit_message_text(
-            "⚠️ Сначала загрузите сдачу заново.",
-            reply_markup=None,
-        )
-        return
-
-    if data.startswith("analysis_page_"):
-        page = int(data.split("_")[-1])
-        await query.edit_message_reply_markup(reply_markup=analysis_keyboard(page))
-        return
-
-    if data.startswith("analysis_"):
-        cmd = data[len("analysis_"):]
-        try:
-            result = getattr(logic, cmd)()
-        except Exception as e:
-            result = f"Ошибка: {e}"
-
-        try:
-            idx  = [c[1] for c in ANALYSIS_COMMANDS].index(cmd)
-            page = idx // ANALYSIS_CMDS_PER_PAGE
-        except ValueError:
-            page = 0
-
-        await query.edit_message_text(
-            _pre(result) if result else "Готово.",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=analysis_keyboard(page),
-        )
-
-
-@require_auth
-@require_fresh_window
-@ignore_telegram_edit_errors
 async def add_move_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data  = query.data
@@ -1147,6 +662,46 @@ async def add_move_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
 
+@require_auth
+@require_fresh_window
+@ignore_telegram_edit_errors
+async def play_card_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обрабатывает callback вида 'play_<CARD>'.
+    Делает ход, перерисовывает позицию и клавиатуру.
+    Если у следующего игрока ходов нет – клавиатура исчезает.
+    """
+    query = update.callback_query
+    await query.answer()
+
+    logic: BridgeLogic | None = context.user_data.get("logic")
+    if logic is None:
+        await query.answer("Нет активной сдачи.", show_alert=True)
+        return
+
+    card_code = query.data.replace("play_", "")  # например 'AS'
+
+    try:
+        notice = logic.play_card(card_code)
+    except ValueError as e:
+        await query.answer(str(e), show_alert=True)
+        return
+
+    # короткое всплывающее сообщение
+    await query.answer(notice, show_alert=False)
+
+    board_view = _pre(logic.display())
+    moves = logic.legal_moves()
+    kb = play_card_keyboard(moves)
+
+    await query.edit_message_text(
+        board_view,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=kb
+    )
+
+
+
 # === Flow выбора контракта ================================================
 @require_auth
 @require_fresh_window
@@ -1176,11 +731,11 @@ async def contract_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if data.startswith("first_"):
         first = data.split("_", 1)[1]
         denom_token = context.user_data.get("chosen_denom")
-        context.user_data.pop("state", None)           # вычистили FSM
+        context.user_data.pop("state", None)  # очищаем FSM
 
         contract_str = "NT" if denom_token == "NT" else denom_token
         try:
-            logic.set_contract(contract_str, first)    # применяем контракт
+            logic.set_contract(contract_str, first)
             context.user_data["contract_set"] = True
         except Exception as e:
             await query.edit_message_text(f"Ошибка: {e}")
@@ -1188,12 +743,16 @@ async def contract_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
         await query.edit_message_text("Приступаю к анализу...")
 
+        board_view = _pre(logic.display())
+        kb = play_card_keyboard(logic.legal_moves())
+
         sent = await query.message.reply_text(
-            _pre(logic.display()),
+            board_view,
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=analysis_keyboard(0)
+            reply_markup=kb
         )
         context.user_data["active_msg_id"] = sent.message_id
+        return
 
 
 # === ТЕКСТОВЫЙ ВВОД ============================================================
@@ -1228,17 +787,15 @@ async def handle_pbn_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка фото/файла-изображения при STATE_AWAIT_PHOTO"""
     if context.user_data.get("state") != STATE_AWAIT_PHOTO:
-        return  # не в режиме ожидания фото
+        return
 
     msg = update.message
 
-    # Определяем, что пришло — фото или документ-изображение
     if msg.photo:
         file = await msg.photo[-1].get_file()
         ext = '.jpg'
     elif msg.document and msg.document.mime_type.startswith("image/"):
         doc = msg.document
-        # Определяем расширение по MIME и по имени, приоритетно MIME
         ext = mimetypes.guess_extension(doc.mime_type) or os.path.splitext(doc.file_name)[1]
         ext = ext.lower()
         allowed_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff'}
@@ -1251,7 +808,6 @@ async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
         file = await doc.get_file()
     else:
-        # ни фото, ни документ-изображение
         await msg.reply_text(
             "Пожалуйста, отправьте изображение в одном из форматов: JPG, PNG, BMP, GIF или TIFF."
         )
@@ -1283,11 +839,9 @@ async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         with open(CACHED_REQUESTS_DATABASE_NAME, "w") as json_file:
             json.dump(database, json_file)
 
-    # Генерируем уникальные имена с расширением
     input_filename = generate_filename()
     output_filename = generate_filename()
 
-    # Скачиваем входной файл
     path = await file.download_to_drive(input_filename)
     await msg.reply_text("Фото принято. Приступаю к распознаванию карт...")
 
@@ -1296,7 +850,6 @@ async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         detector.visualize(output_filename)
         result = detector.preview()
 
-        # Отправляем результат пользователю
         with open(output_filename, "rb") as out_img:
             await msg.reply_photo(photo=out_img)
         sent = await msg.reply_text(
@@ -1311,14 +864,11 @@ async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         await msg.reply_text(f"Ошибка распознавания фото: {e}")
     finally:
-        # Удаляем временные файлы
         for fn in (input_filename, output_filename):
             try:
                 os.remove(fn)
             except OSError:
                 pass
-
-        # Сбрасываем состояние
         context.user_data.pop("state", None)
 
 # === ГЛАВНАЯ ФУНКЦИЯ ===========================================================
@@ -1328,22 +878,6 @@ def post_init(application: Application):
         BotCommand("start", "Запустить бота"),
         BotCommand("id", "Узнать свой Telegram-ID"),
         BotCommand("pbn", "Вывести PBN-строку текущего расклада"),
-        BotCommand("display", "Показать текущий расклад карт"),
-        BotCommand("ddtable", "Показать double-dummy таблицу"),
-        BotCommand("currentplayer", "Кто сейчас ходит"),
-        BotCommand("optimalmove", "Оптимальный ход для текущего игрока"),
-        BotCommand("showmoveoptions", "Все варианты ходов для текущей руки"),
-        BotCommand("playcard", "Сделать ход картой (напр: /playcard 7h)"),
-        BotCommand("playtrick", "Разыграть взятку 4 картами (напр: /playtrick 7h 4c 3d 8s)"),
-        BotCommand("undolasttrick", "Откатить последнюю взятку"),
-        BotCommand("gototrick", "Откатиться к началу взятки (напр: /gototrick 5)"),
-        BotCommand("showhistory", "Показать историю розыгрыша"),
-        BotCommand("playoptimaltoend", "Доиграть сдачу до конца оптимально"),
-        BotCommand("showcurrenthand", "Показать текущую руку"),
-        BotCommand("gotocard", "Откатиться к карте во взятке (напр: /gotocard 7 2)"),
-        BotCommand("playoptimalcard", "Сделать оптимальный ход"),
-        BotCommand("playoptimaltrick", "Разыграть одну оптимальную взятку"),
-        BotCommand("playoptimaltricks", "Разыграть несколько оптимальных взяток (напр: /playoptimaltricks 3)"),
     ])
 
 
@@ -1356,22 +890,15 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", show_id))
     app.add_handler(CommandHandler("pbn", cmd_pbn))
-    app.add_handler(CommandHandler("display", cmd_display))
-    app.add_handler(CommandHandler("ddtable", cmd_ddtable))
-    app.add_handler(CommandHandler("currentplayer", cmd_currentplayer))
-    app.add_handler(CommandHandler("optimalmove", cmd_optimalmove))
-    app.add_handler(CommandHandler("showmoveoptions", cmd_showmoveoptions))
-    app.add_handler(CommandHandler("playcard", cmd_playcard))
-    app.add_handler(CommandHandler("playtrick", cmd_playtrick))
-    app.add_handler(CommandHandler("undolasttrick", cmd_undolasttrick))
-    app.add_handler(CommandHandler("gototrick", cmd_gototrick))
-    app.add_handler(CommandHandler("showhistory", cmd_showhistory))
-    app.add_handler(CommandHandler("playoptimaltoend", cmd_playoptimaltoend))
-    app.add_handler(CommandHandler("showcurrenthand", cmd_showcurrenthand))
-    app.add_handler(CommandHandler("gotocard", cmd_gotocard))
-    app.add_handler(CommandHandler("playoptimalcard", cmd_playoptimalcard))
-    app.add_handler(CommandHandler("playoptimaltrick", cmd_playoptimaltrick))
-    app.add_handler(CommandHandler("playoptimaltricks", cmd_playoptimaltricks))
+
+    # app.add_handler(CommandHandler("ddtable", cmd_ddtable))
+    # app.add_handler(CommandHandler("optimalmove", cmd_optimalmove))
+    # app.add_handler(CommandHandler("showmoveoptions", cmd_showmoveoptions))
+    # app.add_handler(CommandHandler("undolasttrick", cmd_undolasttrick))
+    # app.add_handler(CommandHandler("gototrick", cmd_gototrick))
+    # app.add_handler(CommandHandler("showhistory", cmd_showhistory))
+    # app.add_handler(CommandHandler("playoptimaltoend", cmd_playoptimaltoend))
+    # app.add_handler(CommandHandler("playoptimalcard", cmd_playoptimalcard))
 
     # Кнопки меню и навигации
     app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(menu_analyze|menu_privacy|menu_thanks|input_pbn|input_photo|back_main|back_analyze|generate_deal)$"))
@@ -1380,8 +907,6 @@ def main():
 
     # Кнопки анализа расклада (после распознавания)
     app.add_handler(CallbackQueryHandler(analyze_result_handler, pattern="^(rotate_cw|rotate_ccw|accept_result|to_pbn)$"))
-
-    app.add_handler(CallbackQueryHandler(analysis_handler, pattern="^analysis_"))
 
     app.add_handler(CallbackQueryHandler(contract_flow_handler, pattern="^(denom_[CDHS]|denom_NT|first_[NESW])$"))
 
@@ -1393,6 +918,8 @@ def main():
 
     # Фото и документы-картинки
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_photo_input))
+
+    app.add_handler(CallbackQueryHandler(play_card_handler, pattern="^play_"))
 
     # === Последний — ловит вообще всё ===
     app.add_handler(MessageHandler(filters.ALL, unknown_message))

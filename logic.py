@@ -26,6 +26,7 @@ SUIT2DENOM = {
     "C": "clubs",
 }
 
+SUITS = ["S", "H", "D", "C"]
 SUIT_ICONS = {"S": "♠", "H": "♥", "D": "♦", "C": "♣"}
 ICON2LTR = {v: k for k, v in SUIT_ICONS.items()}
 
@@ -159,6 +160,39 @@ class BridgeLogic:
 
     def to_pbn(self) -> str:
         return self._pbn_str[2:]
+
+    # ───── допустимые ходы текущего игрока ─────
+    def legal_moves(self) -> list[str]:
+        """
+        Возвращает список карт, которыми текущий игрок может
+        походить в текущий момент (учитывается фоллоу-сьют).
+
+        Формат каждой карты — строка 'RankSuit', например 'AS', '3C'.
+        Variation-selector U+FE0F, если он есть, удаляется.
+        """
+        pl = self.current_player()
+        if not self.deal[pl]:
+            return []
+
+        cards_sorted: list[Card] = sorted(
+            self.deal[pl],
+            key=lambda c: (
+                SUITS.index(card_suit(c)),
+                RANKS.index(card_rank(c))
+            )
+        )
+
+        if not self._current:
+            allowed = cards_sorted
+        else:
+            led = card_suit(self._current[0][1])
+            if self._has_suit(self.deal[pl], led):
+                allowed = [c for c in cards_sorted if card_suit(c) == led]
+            else:
+                allowed = cards_sorted
+
+        return [f"{card_rank(c)}{card_suit(c)}" for c in allowed]
+
 
     # ───── вывод рук + указатель хода ─────
     def display(self) -> str:
@@ -765,14 +799,12 @@ class BridgeLogic:
 # ─────────── демо ───────────
 if __name__ == "__main__":
     # pbn = "W:52.AK64.Q8.AT863 KQJT98.83.KJ.QJ7 A3.QJT7.T762.K95 764.952.A9543.42"
-    # pbn = "T652.7652.Q6.AKJ 3.3.T97532.Q9853 Q4.AKQ984.AK4.76 AKJ987.JT.J8.T42"
-    pbn = "AKQJT98765432... .AKQJT98765432.. ...AKQJT98765432 ..AKQJT98765432."
+    pbn = "T652.7652.Q6.AKJ 3.3.T97532.Q9853 Q4.AKQ984.AK4.76 AKJ987.JT.J8.T42"
+    # pbn = "AKQJT98765432... .AKQJT98765432.. ...AKQJT98765432 ..AKQJT98765432."
     g = BridgeLogic(pbn)
-    g.set_contract('nt', 'w')
+    g.set_contract('s', 'w')
+    print(g.legal_moves())
     g.play_optimal_card()
-    g.play_optimal_card()
-    g.play_optimal_card()
-    g.play_optimal_card()
-    g.play_optimal_card()
+    print(g.legal_moves())
 
     print(g.display())
