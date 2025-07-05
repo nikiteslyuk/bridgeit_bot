@@ -379,19 +379,27 @@ class BridgeLogic:
     def _has_suit(hand, suit: str) -> bool:
         return any(card_suit(c) == suit for c in hand)
 
+    def _flush_auto(self) -> None:
+        """
+        Переносит все автосыгранные взятки (_auto_plan) в обычную историю
+        (_trick_history) в хронологическом порядке и очищает буферы авто-плана.
+        Этот метод вызывается каждый раз, когда пользователь делает
+        «ручное» действие либо заново запускает автодоигрыш.
+        """
+        if self._auto_plan:
+            self._trick_history.extend(self._auto_plan)
+            self._trick_manual_flags.extend(self._auto_manual_flags)
+            self._auto_plan.clear()
+            self._auto_manual_flags.clear()
+
     # ───── одиночный ход ─────
     # ───── может быть ValueError ─────
     def play_card(self, card_str: str) -> str:
         """
         Делает одиночный ход указанной картой и возвращает строку-сообщение.
-
-        Возможные варианты возвращаемых строк:
-          «N обязан ходить ♠.» — если игрок нарушает фоллоу-сьют, ход отменён;
-          «Ход: N♣A» — нормальный успешный ход.
-
-        Исключения:
-          ValueError — если карты нет у игрока.
         """
+        # сначала фиксируем все ранее автосыгранные, чтобы они не слетели
+        self._flush_auto()
 
         pl = self.current_player()
         card = Card(normalize_card(card_str))
@@ -425,15 +433,9 @@ class BridgeLogic:
         """
         Принимает строку из 4 карт, полностью разыгрывает взятку
         и возвращает итоговое сообщение.
-
-        Возможные строки-результаты:
-          «Сначала завершите текущую неполную взятку.» — если
-            уже начата взятка, но ещё не положены все 4 карты;
-          «Разыграна взятка: N♥8  E♥7  S♥2  W♥K» — нормальный
-            успешный розыгрыш (формат карты зависит от входа).
-
-        Ошибки формата/правил по-прежнему вызывают ValueError.
         """
+        # фиксируем предыдущий автоплан
+        self._flush_auto()
 
         if self._current:
             return "Сначала завершите текущую неполную взятку."
@@ -442,7 +444,7 @@ class BridgeLogic:
         if len(toks) != 4:
             raise ValueError("Нужно 4 карты.")
 
-        seq: List[Tuple[Player, Card]] = []
+        seq: list[tuple[Player, Card]] = []
         for pl, tok in zip(clockwise_from(self.deal.first), toks):
             c = Card(normalize_card(tok))
             if c not in self.deal[pl]:
@@ -550,30 +552,25 @@ class BridgeLogic:
     # ───── история всех взяток + счёт ─────
     def show_history(self) -> str:
         """
-        Корректно показывает историю розыгрыша: первые в списке — старые взятки,
-        последние — новые. Поддерживает частично начатые и автосыгранные взятки.
-        Также правильно пересчитывает NS/EW.
+        Корректно показывает историю розыгрыша в хронологическом порядке.
+        Поддерживает частично начатые и автосыгранные взятки и правильно
+        пересчитывает счёт NS/EW.
         """
         unknown = 13 - self._start_len
 
-        # Собираем полную историю взяток в порядке реального розыгрыша:
-        tricks = []
-        flags = []
+        tricks: list[list[tuple[Player, Card]]] = []
+        flags:  list[list[bool]]               = []
 
-        # 1. Ручные взятки (походил игрок)
         tricks.extend(self._trick_history)
         flags.extend(self._trick_manual_flags)
 
-        # 2. Если есть неполная взятка — она следующая
+        tricks.extend(self._auto_plan)
+        flags.extend(self._auto_manual_flags)
+
         if self._current:
             tricks.append(self._current)
             flags.append(self._current_manual + [False] * (4 - len(self._current)))
 
-        # 3. Потом автосыгранные взятки (если были доиграны до конца)
-        tricks.extend(self._auto_plan)
-        flags.extend(self._auto_manual_flags)
-
-        # Выводим историю с учётом пустых (неизвестных) взяток в начале
         out = ["", "История розыгрыша:"]
         line_no = 1
 
@@ -582,18 +579,17 @@ class BridgeLogic:
             line_no += 1
 
         for seq, fl in zip(tricks, flags):
-            # Рисуем взятку (или частичную взятку)
             out.append(f"{line_no:2}: {fmt_seq(seq)}")
-            # Если были ручные ходы — рисуем стрелочки
             if any(fl):
-                arrow = "  ".join("^^^" if i < len(fl) and fl[i] else "   " for i in range(4)).rstrip()
+                padded = fl + [False] * (4 - len(fl))
+                arrow = "  ".join("^^^" if f else "   " for f in padded).rstrip()
                 out.append("    " + arrow)
             line_no += 1
 
-        # Подсчёт набранных взяток — только за полностью сыгранные взятки
         trump = None if self.contract in (None, Denom.nt) else self.contract
         finished = [t for t in tricks if len(t) == 4]
-        ns = sum(trick_winner(t, trump) in (Player.north, Player.south) for t in finished)
+        ns = sum(trick_winner(t, trump) in (Player.north, Player.south)
+                 for t in finished)
         ew = len(finished) - ns
 
         out += ["", f"Текущее состояние: NS – {ns}, EW – {ew}", ""]
@@ -612,14 +608,19 @@ class BridgeLogic:
 
     # ───── доигрыш + план розыгрыша ─────
     def play_optimal_to_end(self) -> None:
-        if self.contract is None:
-            return
-        if all(len(self.deal[p]) == 0 for p in Player):
+        """
+        Доигрывает сдачу до конца оптимальными картами по DDS.
+        Учёт частично начатой взятки и фиксация уже сыгранных авто-взяток.
+        """
+        if self.contract is None or all(len(self.deal[p]) == 0 for p in Player):
             return
 
+        # сначала принимаем все уже разыгранные автосыгранные взятки
+        self._flush_auto()
+        # а возможный автоплан «наперед» (после откатов) убираем
         self._clear_auto()
 
-        # Если неполная взятка, доигрываем её
+        # Доигрываем неполную текущую взятку
         if self._current:
             cur = self._current.copy()
             manual_flags = self._current_manual.copy()
@@ -630,11 +631,12 @@ class BridgeLogic:
                 manual_flags.append(False)
             self._auto_plan.append(cur)
             self._auto_manual_flags.append(manual_flags)
-            self.deal.first = trick_winner(cur, None if self.contract is Denom.nt else self.contract)
+            self.deal.first = trick_winner(
+                cur, None if self.contract is Denom.nt else self.contract)
             self._current.clear()
             self._current_manual.clear()
 
-        # Потом доигрываем до конца
+        # Затем доигрываем оставшиеся взятки
         while any(len(self.deal[p]) for p in Player):
             trick, flags = [], []
             for pl in clockwise_from(self.deal.first):
@@ -644,7 +646,8 @@ class BridgeLogic:
                 flags.append(False)
             self._auto_plan.append(trick)
             self._auto_manual_flags.append(flags)
-            self.deal.first = trick_winner(trick, None if self.contract is Denom.nt else self.contract)
+            self.deal.first = trick_winner(
+                trick, None if self.contract is Denom.nt else self.contract)
 
     def show_current_hand(self) -> str:
         """
@@ -808,7 +811,25 @@ if __name__ == "__main__":
     pbn = "T652.7652.Q6.AKJ 3.3.T97532.Q9853 Q4.AKQ984.AK4.76 AKJ987.JT.J8.T42"
     # pbn = "AKQJT98765432... .AKQJT98765432.. ...AKQJT98765432 ..AKQJT98765432."
     g = BridgeLogic(pbn)
-    g.set_contract('s', 'w')
-    print(g.display())
+    g.set_contract('s', 'n')
+    g.play_card('Ac')
     g.play_optimal_to_end()
-    print(g.display())
+    print(g.show_history())
+    g.undo_last_card()
+    print(g.show_history())
+    g.play_card('Ad')
+    print(g.show_history())
+    g.undo_last_card()
+    print(g.show_history())
+    g.play_optimal_to_end()
+    print(g.show_history())
+
+    g = BridgeLogic(pbn)
+    g.set_contract('s', 'n')
+    g.play_optimal_to_end()
+    print(g.show_history())
+    g.undo_last_card()
+    g.play_optimal_to_end()
+    print(g.show_history())
+
+
