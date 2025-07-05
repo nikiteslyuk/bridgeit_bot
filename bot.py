@@ -689,7 +689,6 @@ async def analysis_action_handler(update: Update, context: ContextTypes.DEFAULT_
         await query.answer("Нет активной сдачи.", show_alert=True)
         return
 
-    context.user_data["show_funcs"] = False
     need_redraw = True
 
     if data == "act_optimal":
@@ -706,27 +705,45 @@ async def analysis_action_handler(update: Update, context: ContextTypes.DEFAULT_
 
     elif data == "act_toggle":
         context.user_data["show_funcs"] = not context.user_data.get("show_funcs", False)
-        need_redraw = False
+        kb = make_board_keyboard(logic, context.user_data["show_funcs"])
+        await query.edit_message_reply_markup(reply_markup=kb)
+        return
 
     elif data == "act_history":
         txt = _pre(logic.show_history())
         back_kb = InlineKeyboardMarkup(
             [[InlineKeyboardButton("⬅️ Назад", callback_data="act_back")]]
         )
-        await query.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb)
-        need_redraw = False
+        await query.edit_message_text(
+            text=txt,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=back_kb
+        )
+        return
+
+    elif data == "act_back":
+        board_view = _pre(logic.display())
+        kb = make_board_keyboard(logic, context.user_data.get("show_funcs", False))
+        await query.edit_message_text(
+            text=board_view,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb
+        )
+        return
+
 
     elif data == "act_ddtable":
         txt = _pre(logic.dd_table())
         back_kb = InlineKeyboardMarkup(
             [[InlineKeyboardButton("⬅️ Назад", callback_data="act_back")]]
         )
-        await query.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb)
-        need_redraw = False
+        await query.edit_message_text(
+            text=txt,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=back_kb
+        )
+        return
 
-    elif data == "act_back":
-        await query.message.delete()
-        need_redraw = True
 
     main_msg_id = context.user_data.get("active_msg_id")
     if need_redraw and main_msg_id:
