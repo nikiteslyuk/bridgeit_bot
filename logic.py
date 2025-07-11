@@ -588,7 +588,7 @@ class BridgeLogic:
             tricks.append(self._current)
             flags.append(self._current_manual + [False] * (4 - len(self._current)))
 
-        out = ["", "История розыгрыша:"]
+        out = [""]
         line_no = 1
 
         for _ in range(unknown):
@@ -609,7 +609,7 @@ class BridgeLogic:
                  for t in finished)
         ew = len(finished) - ns
 
-        out += ["", f"Текущее состояние: NS – {ns}, EW – {ew}", ""]
+        out += ["", f"Количество взяток на линиях:\nNS – {ns}\nEW – {ew}", ""]
         return "\n".join(out)
 
     def history_matrix(self) -> tuple[list[list[str]], int]:

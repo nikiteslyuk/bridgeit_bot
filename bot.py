@@ -93,6 +93,44 @@ def ignore_telegram_edit_errors(func):
     return wrapper
 
 
+async def _show_active_window(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Пере-рисовывает последнее «живое» окно, чтобы оно снова оказалось
+    самым нижним в чате.  Если активного окна нет — показывает главное меню.
+    """
+    chat_id = update.effective_chat.id
+    logic: BridgeLogic | None = context.user_data.get("logic")
+
+    if logic:  # идёт раздача
+        kb = make_board_keyboard(
+            logic,
+            context.user_data.get("show_funcs", False),
+            context.user_data.get("highlight_moves", False),
+        )
+        sent = await context.bot.send_message(
+            chat_id=chat_id,
+            text=_pre(logic.display()),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb,
+        )
+        context.user_data["active_msg_id"] = sent.message_id
+    else:      # главная страница
+        sent = await context.bot.send_message(
+            chat_id=chat_id,
+            text="Выберите действие:",
+            reply_markup=main_menu_markup(),
+        )
+        context.user_data["active_msg_id"] = sent.message_id
+
+
+async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Я понимаю только команды.\n"
+        "Пожалуйста, общайся со мной на языке команд."
+    )
+    await _show_active_window(update, context)
+
+
 def require_fresh_window(handler):
     """Декоратор: если это неактуальное окно — показываем сообщение и молча выходим."""
     @wraps(handler)
@@ -146,13 +184,6 @@ async def safe_send(chat_func, text: str, **kwargs):
         chunk = text[i : i + MAX_LEN]
         await chat_func(chunk, **kwargs)
 
-
-async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Я понимаю только команды.\n"
-        "Пожалуйста, общайся со мной на языке команд."
-    )
-
 # === ХЕЛПЕРЫ ДЛЯ КЛАВИАТУР ====================================================
 
 def goto_trick_keyboard(total: int) -> InlineKeyboardMarkup:
@@ -165,8 +196,7 @@ def goto_trick_keyboard(total: int) -> InlineKeyboardMarkup:
 
 
 def goto_card_keyboard(cards: list[str]) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(lbl, callback_data=f"goto_card_{idx + 1}")
-             for idx, lbl in enumerate(cards)]]
+    rows = [[InlineKeyboardButton(lbl, callback_data=f"goto_card_{idx + 1}") for idx, lbl in enumerate(cards)]]
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="goto_cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -174,18 +204,20 @@ def goto_card_keyboard(cards: list[str]) -> InlineKeyboardMarkup:
 def make_board_keyboard(logic: BridgeLogic, show_funcs: bool = False, highlight: bool = False) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     rows.append([
-        InlineKeyboardButton("Оптимальный ход", callback_data="act_optimal"),
-        InlineKeyboardButton("Отменить ход",     callback_data="act_undo"),
+        InlineKeyboardButton("🗑️ Отменить ход", callback_data="act_undo"),
+        InlineKeyboardButton("⭐ Оптимальный ход", callback_data="act_optimal"),
     ])
     if show_funcs:
         rows.append([
-            InlineKeyboardButton("История",           callback_data="act_history"),
-            InlineKeyboardButton("DD-таблица",        callback_data="act_ddtable"),
-            InlineKeyboardButton("Доиграть до конца", callback_data="act_playtoend"),
+            InlineKeyboardButton("⏭️ Доиграть до конца", callback_data="act_playtoend"),
+        ])
+        rows.append([
+            InlineKeyboardButton("📜 История",           callback_data="act_history"),
+            InlineKeyboardButton("📊 DD-таблица",        callback_data="act_ddtable"),
         ])
         rows.append([
             InlineKeyboardButton(
-                "Подсветить ходы 🔦" if not highlight else "Обычные кнопки ↩️",
+                "🔦 Подсветить ходы" if not highlight else "🚫 Скрыть подсветку",
                 callback_data="act_highlight",
             ),
             InlineKeyboardButton("⤴️ К карте", callback_data="act_gotocard"),
@@ -202,7 +234,8 @@ def make_board_keyboard(logic: BridgeLogic, show_funcs: bool = False, highlight:
                     label = f"{_pretty(c)}: {trick_map[c]}" if c in trick_map else _pretty(c)
                     btns.append(InlineKeyboardButton(label, callback_data=f"play_{c}"))
                 rows.append(btns)
-    rows.append([InlineKeyboardButton("…", callback_data="act_toggle")])
+    toggle_label = "🛠️ Опции" if not show_funcs else "🃏 Карты"
+    rows.append([InlineKeyboardButton(toggle_label, callback_data="act_toggle")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -224,12 +257,12 @@ def card_keyboard(cards: list[str]) -> InlineKeyboardMarkup:
 def hand_keyboard(prompt_back: str = "⬅️ Назад", back_data: str = "cancel_add_move") -> InlineKeyboardMarkup:
     rows = [
         [
-            InlineKeyboardButton("North ⬆️",  callback_data="hand_N"),
-            InlineKeyboardButton("East ➡️",   callback_data="hand_E"),
+            InlineKeyboardButton("⬆️ North",  callback_data="hand_N"),
+            InlineKeyboardButton("➡️ East",   callback_data="hand_E"),
         ],
         [
-            InlineKeyboardButton("West ⬅️",   callback_data="hand_W"),
-            InlineKeyboardButton("South ⬇️",  callback_data="hand_S"),
+            InlineKeyboardButton("⬅️ West",   callback_data="hand_W"),
+            InlineKeyboardButton("⬇️ South",  callback_data="hand_S"),
         ],
         [InlineKeyboardButton(prompt_back, callback_data=back_data)]
     ]
@@ -250,12 +283,12 @@ def contract_denom_keyboard() -> InlineKeyboardMarkup:
 def contract_first_keyboard() -> InlineKeyboardMarkup:
     rows = [
         [
-            InlineKeyboardButton("North ⬆️",  callback_data="first_N"),
-            InlineKeyboardButton("East ➡️",   callback_data="first_E"),
+            InlineKeyboardButton("⬆️ North",  callback_data="first_N"),
+            InlineKeyboardButton("➡️ East",   callback_data="first_E"),
         ],
         [
-            InlineKeyboardButton("West ⬅️",   callback_data="first_W"),
-            InlineKeyboardButton("South ⬇️",  callback_data="first_S"),
+            InlineKeyboardButton("⬅️ West",   callback_data="first_W"),
+            InlineKeyboardButton("⬇️ South",  callback_data="first_S"),
         ],
     ]
     return InlineKeyboardMarkup(rows)
@@ -263,9 +296,9 @@ def contract_first_keyboard() -> InlineKeyboardMarkup:
 
 def main_menu_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🃏 Анализ расклада", callback_data="menu_analyze")],
-        [InlineKeyboardButton("📜 Политика конфиденциальности", callback_data="menu_privacy")],
-        [InlineKeyboardButton("🙏 Благодарность создателю", callback_data="menu_thanks")],
+        [InlineKeyboardButton("📷 Анализ расклада по фото", callback_data="input_photo")],
+        [InlineKeyboardButton("📄 Анализ расклада по PBN",  callback_data="input_pbn")],
+        [InlineKeyboardButton("📘 Документация",       callback_data="menu_docs")],
     ])
 
 
@@ -287,15 +320,15 @@ def back_to_analyze_markup() -> InlineKeyboardMarkup:
 def analyze_result_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("⏪ Повернуть против часовой", callback_data="rotate_ccw"),
-            InlineKeyboardButton("Повернуть по часовой ⏩",     callback_data="rotate_cw"),
+            InlineKeyboardButton("↩️ По часовой", callback_data="rotate_cw"),
+            InlineKeyboardButton("↪️ Против часовой", callback_data="rotate_ccw"),
         ],
         [
             InlineKeyboardButton("➕ Добавить карту",           callback_data="add_card_start"),
             InlineKeyboardButton("🔀 Переместить карту",        callback_data="move_card_start"),
         ],
         [
-            InlineKeyboardButton("Принять сдачу ✅",            callback_data="accept_result"),
+            InlineKeyboardButton("✅ Принять расклад",            callback_data="accept_result"),
         ],
     ])
 
@@ -362,7 +395,6 @@ async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Ошибка получения PBN из логики: {e}")
             return
     await update.message.reply_text("❌ Нет активного расклада для вывода PBN.")
-
 
 
 async def russian_precisedelta(delta: datetime.timedelta):
@@ -477,81 +509,40 @@ async def goto_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @require_fresh_window
 @ignore_telegram_edit_errors
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Главное и сервисные меню.
-    """
     query = update.callback_query
-    await query.answer()
-    data = query.data
+    data  = query.data
 
-    # ---------- пункт «🃏 Анализ расклада» ----------
-    if data == "menu_analyze":
-        context.user_data.pop("state", None)
+    if data == "menu_docs":
         await query.edit_message_text(
-            "Выберите способ ввода расклада:",
-            reply_markup=analyze_menu_markup(),
+            "Документация находится в разработке 🚧",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_main")]]),
         )
         return
 
-    # ---------- «Политика» и «Благодарность» -------
-    if data in {"menu_privacy", "menu_thanks"}:
-        await query.edit_message_text(
-            "Функция находится в разработке 🚧",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("⬅️ Назад", callback_data="back_main")]]
-            ),
-        )
-        return
-
-    # ---------- «Сгенерировать сдачу» --------------
-    if data == "generate_deal":
-        await query.edit_message_text(
-            "Функция находится в разработке 🚧",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("⬅️ Назад", callback_data="back_analyze")]]
-            ),
-        )
-        return
-
-    # ---------- ввод PBN-строки ---------------------
     if data == "input_pbn":
         context.user_data["state"] = STATE_AWAIT_PBN
         await query.edit_message_text(
             "Введите PBN-строку расклада:",
-            reply_markup=back_to_analyze_markup(),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_main")]]),
         )
         return
 
-    # ---------- ввод фото ---------------------------
     if data == "input_photo":
         context.user_data["state"] = STATE_AWAIT_PHOTO
         await query.edit_message_text(
             "Пришлите фото расклада для распознавания:",
-            reply_markup=back_to_analyze_markup(),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_main")]]),
         )
         return
 
-    # ---------- «Назад» из analyze → главное меню ---
     if data == "back_main":
         context.user_data.pop("state", None)
         await query.edit_message_text(
-            "Я нахожусь на стадии закрытого бета-тестирования.\n"
-            "Тыкай на кнопки, ищи баги и пиши создателю!",
+            "Выберите действие:",
             reply_markup=main_menu_markup(),
         )
         return
 
-    # ---------- «Назад» из подменю → меню анализа ---
-    if data == "back_analyze":
-        context.user_data.pop("state", None)
-        await query.edit_message_text(
-            "Выберите способ ввода расклада:",
-            reply_markup=analyze_menu_markup(),
-        )
-        return
-
-    # ---------- fallback ----------------------------
-    await query.answer("Неизвестная кнопка", show_alert=True)
 
 
 @require_fresh_window
@@ -653,9 +644,9 @@ async def add_move_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     # --- начало «добавить карту» --------------------------------------------
     if data == "add_card_start":
-        lost = detector.lost_cards()           # список недостающих карт (str, «7H» и т.п.)
+        lost = detector.lost_cards()
         if not lost:
-            await query.answer("Нет потерянных карт", show_alert=True)
+            await query.answer("Нет потерянных карт")
             return
         context.user_data["state"] = STATE_ADD_CARD_SELECT_CARD
         await query.edit_message_text(
@@ -707,7 +698,7 @@ async def add_move_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
         hand_src = data[-1]
         cards_in_hand = detector.hand_cards(hand_src)   # список карт в руке
         if not cards_in_hand:
-            await query.answer("В этой руке нет карт", show_alert=True)
+            await query.answer("В этой руке нет карт")
             return
         context.user_data["pending_hand_src"] = hand_src
         context.user_data["state"] = STATE_MOVE_CARD_SELECT_CARD
@@ -912,90 +903,96 @@ async def handle_pbn_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === ОБРАБОТКА ФОТО ============================================================
 
 async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка фото/файла-изображения при STATE_AWAIT_PHOTO"""
+    """
+    Обработка фото/изображений.
+    • Если бот сейчас НЕ ждёт фото → отвечаем так же, как на «неизвестную команду».
+    • Если ждёт – продолжаем распознавание.
+    """
+    # --- если бот сейчас НЕ ожидает фото ---------------------------------
     if context.user_data.get("state") != STATE_AWAIT_PHOTO:
+        await update.message.reply_text(
+            "Я понимаю только команды.\n"
+            "Пожалуйста, общайся со мной на языке команд."
+        )
+        await _show_active_window(update, context)
         return
 
     msg = update.message
 
+    # ── приняли файл изображения ─────────────────────────────────────────
     if msg.photo:
         file = await msg.photo[-1].get_file()
-        ext = '.jpg'
+        ext = ".jpg"
     elif msg.document and msg.document.mime_type.startswith("image/"):
         doc = msg.document
         ext = mimetypes.guess_extension(doc.mime_type) or os.path.splitext(doc.file_name)[1]
         ext = ext.lower()
-        allowed_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff'}
+        allowed_exts = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff"}
         if ext not in allowed_exts:
             await msg.reply_text(
-                f"Извините, я не умею распознавать файлы с расширением «{ext}».\n"
-                "Пожалуйста, пришлите изображение в одном из форматов: "
-                "JPG, JPEG, PNG, BMP, GIF или TIFF."
+                f"Извините, не умею распознавать файлы «{ext}».\n"
+                "Пришлите изображение в формате: JPG, JPEG, PNG, BMP, GIF или TIFF."
             )
             return
         file = await doc.get_file()
     else:
         await msg.reply_text(
-            "Пожалуйста, отправьте изображение в одном из форматов: JPG, PNG, BMP, GIF или TIFF."
+            "Отправьте изображение (JPG, PNG, BMP, GIF или TIFF)."
         )
         return
 
+    # ── дальше без изменений: лимиты, скачивание, распознавание ──────────
     chat_id = str(msg.chat_id)
     uid = update.effective_user.id
     if uid not in UNLIMITED_PHOTO_ID:
         if os.path.exists(CACHED_REQUESTS_DATABASE_NAME):
-            with open(CACHED_REQUESTS_DATABASE_NAME, "r") as json_file:
-                database = json.load(json_file)
+            with open(CACHED_REQUESTS_DATABASE_NAME, "r") as jf:
+                database = json.load(jf)
         else:
             database = {}
-        datetime_now = datetime.datetime.now()
+        now = datetime.datetime.now()
         if chat_id in database:
-            current_diff = datetime_now - datetime.datetime.fromisoformat(database[chat_id][0])
-            remaining_time = datetime.timedelta(minutes=10) - current_diff
-            if len(database[chat_id]) > 2 or (len(database[chat_id]) == 2 and remaining_time.total_seconds() > 0):
+            diff = now - datetime.datetime.fromisoformat(database[chat_id][0])
+            wait = datetime.timedelta(minutes=10) - diff
+            if len(database[chat_id]) > 2 or (len(database[chat_id]) == 2 and wait.total_seconds() > 0):
                 await msg.reply_text(
-                    f"Превышено ограничение на распознавание фото. Следующее распознавание будет доступно через {await russian_precisedelta(remaining_time)}"
+                    f"Превышен лимит. Следующее распознавание через {await russian_precisedelta(wait)}."
                 )
                 return
-            else:
-                if len(database[chat_id]) == 2:
-                    database[chat_id].pop(0)
-                database[chat_id].append(datetime_now.isoformat())
+            if len(database[chat_id]) == 2:
+                database[chat_id].pop(0)
+            database[chat_id].append(now.isoformat())
         else:
-            database[chat_id] = [datetime_now.isoformat()]
-        with open(CACHED_REQUESTS_DATABASE_NAME, "w") as json_file:
-            json.dump(database, json_file)
+            database[chat_id] = [now.isoformat()]
+        with open(CACHED_REQUESTS_DATABASE_NAME, "w") as jf:
+            json.dump(database, jf)
 
-    input_filename = generate_filename()
-    output_filename = generate_filename()
-
-    path = await file.download_to_drive(input_filename)
-    await msg.reply_text("Фото принято. Приступаю к распознаванию карт...")
+    inp = generate_filename()
+    out = generate_filename()
+    path = await file.download_to_drive(inp)
+    await msg.reply_text("Фото принято. Распознаю карты...")
 
     try:
         detector = BridgeCardDetector(path)
-        detector.visualize(output_filename)
-        result = detector.preview()
+        detector.visualize(out)
+        preview = detector.preview()
 
-        with open(output_filename, "rb") as out_img:
-            await msg.reply_photo(photo=out_img)
+        with open(out, "rb") as img:
+            await msg.reply_photo(photo=img)
         sent = await msg.reply_text(
-            _pre(result),
+            _pre(preview),
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=analyze_result_markup()
+            reply_markup=analyze_result_markup(),
         )
         context.user_data["active_msg_id"] = sent.message_id
         context.user_data["detector"] = detector
 
-
     except Exception as e:
-        await msg.reply_text(f"Ошибка распознавания фото: {e}")
+        await msg.reply_text(f"Ошибка распознавания: {e}")
     finally:
-        for fn in (input_filename, output_filename):
-            try:
-                os.remove(fn)
-            except OSError:
-                pass
+        for fn in (inp, out):
+            try: os.remove(fn)
+            except OSError: pass
         context.user_data.pop("state", None)
 
 # === ГЛАВНАЯ ФУНКЦИЯ ===========================================================
@@ -1003,8 +1000,8 @@ async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
 def post_init(application: Application):
     return application.bot.set_my_commands([
         BotCommand("start", "Запустить бота"),
+        BotCommand("pbn", "PBN-строка текущего расклада"),
         BotCommand("id", "Узнать свой Telegram-ID"),
-        BotCommand("pbn", "Вывести PBN-строку текущего расклада"),
     ])
 
 
@@ -1018,19 +1015,8 @@ def main():
     app.add_handler(CommandHandler("id", show_id))
     app.add_handler(CommandHandler("pbn", cmd_pbn))
 
-    # app.add_handler(CommandHandler("playoptimalcard", cmd_playoptimalcard))
-    # app.add_handler(CommandHandler("optimalmove", cmd_optimalmove))
-
-    # app.add_handler(CommandHandler("showhistory", cmd_showhistory))
-    # app.add_handler(CommandHandler("playoptimaltoend", cmd_playoptimaltoend))
-    # app.add_handler(CommandHandler("ddtable", cmd_ddtable))
-
-    # app.add_handler(CommandHandler("showmoveoptions", cmd_showmoveoptions))
-    # app.add_handler(CommandHandler("gototrick", cmd_gototrick))
-
     # Кнопки меню и навигации
-    app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(menu_analyze|menu_privacy|menu_thanks|input_pbn|input_photo|back_main|back_analyze|generate_deal)$"))
-
+    app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(menu_docs|input_pbn|input_photo|back_main)$"))
     app.add_handler(CallbackQueryHandler(add_move_flow_handler, pattern="^(add_card_start|move_card_start|sel_card_.*|hand_[NESW]|cancel_add_move)$"))
 
     # Кнопки анализа расклада (после распознавания)
