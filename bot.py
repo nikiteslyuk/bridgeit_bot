@@ -28,7 +28,7 @@ os.makedirs("img", exist_ok=True)
 # TOKEN = os.getenv("TG_TOKEN")
 TOKEN = "7976805123:AAHpYOm43hazvkXUlDY-q4X9US18upq9uak"
 AUTHORIZED_ID = [375025446, 855302541, 5458141225]
-UNLIMITED_ID = [855302541]
+UNLIMITED_ID = [375025446, 855302541]
 logging.basicConfig(level=logging.INFO)
 req = HTTPXRequest(connection_pool_size=10, connect_timeout=10.0, read_timeout=60.0, write_timeout=60.0, pool_timeout=10.0)
 
@@ -103,14 +103,13 @@ def ignore_telegram_edit_errors(func):
 
 
 async def _show_active_window(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Пере-рисовывает последнее «живое» окно, чтобы оно снова оказалось
-    самым нижним в чате.  Если активного окна нет — показывает главное меню.
-    """
     chat_id = update.effective_chat.id
-    logic: BridgeLogic | None = context.user_data.get("logic")
 
-    if logic:  # идёт раздача
+    logic: BridgeLogic | None = context.user_data.get("logic")
+    contract_set = context.user_data.get("contract_set", False)
+    state = context.user_data.get("state")
+
+    if logic and contract_set:
         kb = make_board_keyboard(
             logic,
             context.user_data.get("show_funcs", False),
@@ -123,7 +122,23 @@ async def _show_active_window(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=kb,
         )
         context.user_data["active_msg_id"] = sent.message_id
-    else:      # главная страница
+
+    elif logic and not contract_set:
+        if state == STATE_CONTRACT_CHOOSE_FIRST:
+            sent = await context.bot.send_message(
+                chat_id=chat_id,
+                text="Кто делает первый ход?",
+                reply_markup=contract_first_keyboard(),
+            )
+        else:
+            sent = await context.bot.send_message(
+                chat_id=chat_id,
+                text="Выберите деноминацию контракта:",
+                reply_markup=contract_denom_keyboard(),
+            )
+        context.user_data["active_msg_id"] = sent.message_id
+
+    else:
         sent = await context.bot.send_message(
             chat_id=chat_id,
             text="Выберите действие:",
@@ -361,6 +376,69 @@ def set_logic_from_pbn(context: ContextTypes.DEFAULT_TYPE, pbn: str) -> BridgeLo
 
 
 # === КОМАНДЫ ==================================================================
+def get_help_text() -> str:
+    return """*Команды*
+    
+    1. /start — запустить бота и открыть главное меню
+    2. /pbn — вывести PBN-строку текущего расклада
+    3. /help — показать это сообщение
+    4. /id — узнать свой Telegram ID
+
+
+*Анализ расклада*
+
+    1. 📷 По фото — выберите «Анализ по фото» и отправьте снимок расклада  
+            • На фото действует лимит запросов и «кулдаун»  
+            • Номиналы карт должны быть хорошо видны 
+            • Если в трёх руках по 13 карт, а в четвёртой меньше, недостающие карты автоматически добавятся именно в эту руку
+    2. 📄 По PBN — выберите «Анализ по PBN» и отправьте одну PBN-строку
+            • Формат PBN: сторона света (буква): рука1 рука2 рука3 рука4  
+            • Буква перед двоеточием указывает, чья рука идет первой (N/E/S/W)  
+            • Остальные руки идут по часовой стрелке  
+            • Рука пишется как четыре группы через точки: пики.червы.бубны.трефы  
+            • Пример: W:T652.7652.Q6.AKJ 3.3.T97532.Q9853 Q4.AKQ984.AK4.76 AKJ987.JT.J8.T42
+
+
+*Меню редактирования фото*
+
+    1. ↩️ Повернуть по часовой — повернуть расклад по часовой стрелке
+    2. ↪️ Повернуть против часовой — повернуть расклад против часовой
+    3. ➕ Добавить карту — выбрать потерянную карту и руку для добавления
+    4. 🔀 Переместить карту — переложить карту в другую руку
+    5. ✅ Принять расклад — завершить правки и перейти к выбору контракта
+
+
+*После принятия расклада*
+
+    1. Выберите деноминацию: ♣ ♦ ♥ ♠ NT
+    2. Укажите, кто делает первый ход: N E S W
+
+
+*Режим анализа*
+
+    На экране показан список всех легальных ходов текущего игрока; стрелка указывает, чей ход
+    
+    1. Основные кнопки (всегда на экране)
+            1.1 🗑️ Отменить ход — откатить последнюю сыгранную карту
+            1.2 ⭐ Оптимальный ход — сделать лучший ход по DD-анализу
+            1.3 🛠️ Опции / 🃏 Карты — переключить клавиатуру функций ↔ карт
+        
+    2. Клавиатура функций
+            2.1 ⏭️ Доиграть до конца — оптимально по DD разыграть все оставшиеся карты и открыть историю
+            2.2 📜 История — показать все взятки; ходы *вашего* игрока помечены **^^^** (оптимальные ходы не маркируются); формат карт *N♥A* — туз ♥ с руки N
+            2.3 📊 DD-таблица — таблица Double-Dummy для всех деноминаций
+            2.4 🔦 Подсветить ходы / 🚫 Скрыть — показать или скрыть ожидаемое число взяток под каждой доступной картой
+            2.5 ⤴️ К карте — перемотать к выбранной карте в истории
+
+*Подсказка*
+    1. Чтобы начать новый расклад или вернуться в главное меню, нажмите /start"""
+
+
+@require_auth
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(get_help_text(), parse_mode=ParseMode.MARKDOWN)
+    await _show_active_window(update, context)
+
 
 @require_auth
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -371,10 +449,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_menu_markup(),
     )
     context.user_data["active_msg_id"] = sent.message_id
-
-
-async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Ваш Telegram ID: {update.effective_user.id}")
 
 
 @require_auth
@@ -410,7 +484,7 @@ async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await update.message.reply_text(f"Ошибка получения PBN из распознавания: {e}")
             return
-    if logic:
+    if logic and context.user_data.get("contract_set"):
         try:
             pbn = logic.to_pbn()
             await update.message.reply_text(f"PBN (N, E, S, W):\n{_pre(pbn)}", parse_mode=ParseMode.MARKDOWN)
@@ -424,6 +498,11 @@ async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Ошибка получения PBN из логики: {e}")
             return
     await update.message.reply_text("❌ Нет активного расклада для вывода PBN.")
+    await _show_active_window(update, context)
+
+
+async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Ваш Telegram ID: {update.effective_user.id}")
 
 
 async def russian_precisedelta(delta: datetime.timedelta):
@@ -543,7 +622,8 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "menu_docs":
         await query.edit_message_text(
-            "Документация находится в разработке 🚧",
+            get_help_text(),
+            parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_main")]]),
         )
         return
@@ -985,6 +1065,7 @@ def post_init(application: Application):
     return application.bot.set_my_commands([
         BotCommand("start", "Запустить бота"),
         BotCommand("pbn", "PBN-строка текущего расклада"),
+        BotCommand("help", "Показать документацию"),
         BotCommand("id", "Узнать свой Telegram-ID"),
     ])
 
@@ -996,8 +1077,9 @@ def main():
 
     # Команды
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("id", show_id))
     app.add_handler(CommandHandler("pbn", cmd_pbn))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("id", show_id))
 
     # Кнопки меню и навигации
     app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(menu_docs|input_pbn|input_photo|back_main)$"))
