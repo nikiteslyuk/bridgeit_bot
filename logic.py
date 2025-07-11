@@ -374,6 +374,29 @@ class BridgeLogic:
 
         return "\n".join(lines)
 
+    def move_options(self) -> Dict[str, int]:
+        """
+        Возвращает словарь возможных ходов текущего игрока
+        формата {'AS': 8, 'KH': 7, …},
+        где ключ — карта RankSuit (rank → A,K,Q,J,T,9…; suit → S,H,D,C),
+        а значение — максимальное количество взяток, которое
+        остаётся у стороны-хозяина хода при оптимальной игре
+        после выхода этой картой.
+
+        Требует предварительно заданного контракта.
+        """
+        if self.contract is None:
+            raise RuntimeError("Сначала задайте контракт.")
+
+        self.deal.trump = self.contract
+
+        options: Dict[str, int] = {}
+        for card, tricks in solve_board(self.deal):
+            token = f"{card_rank(card)}{card_suit(card)}"
+            options[token] = tricks
+
+        return options
+
     # ───── служебные проверки ─────
     @staticmethod
     def _has_suit(hand, suit: str) -> bool:
@@ -812,24 +835,7 @@ if __name__ == "__main__":
     # pbn = "AKQJT98765432... .AKQJT98765432.. ...AKQJT98765432 ..AKQJT98765432."
     g = BridgeLogic(pbn)
     g.set_contract('s', 'n')
-    g.play_card('Ac')
-    g.play_optimal_to_end()
-    print(g.show_history())
-    g.undo_last_card()
-    print(g.show_history())
-    g.play_card('Ad')
-    print(g.show_history())
-    g.undo_last_card()
-    print(g.show_history())
-    g.play_optimal_to_end()
-    print(g.show_history())
-
-    g = BridgeLogic(pbn)
-    g.set_contract('s', 'n')
-    g.play_optimal_to_end()
-    print(g.show_history())
-    g.undo_last_card()
-    g.play_optimal_to_end()
-    print(g.show_history())
+    print(g.show_move_options())
+    print(g.move_options())
 
 
