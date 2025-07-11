@@ -186,6 +186,12 @@ async def safe_send(chat_func, text: str, **kwargs):
 
 # === ХЕЛПЕРЫ ДЛЯ КЛАВИАТУР ====================================================
 
+async def _show_history_with_back(query, logic):
+    txt = _pre(logic.show_history())
+    back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="act_back")]])
+    await query.edit_message_text(text=txt, parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb)
+
+
 def goto_trick_keyboard(total: int) -> InlineKeyboardMarkup:
     rows = []
     nums = [str(i) for i in range(1, total + 1)]
@@ -331,7 +337,6 @@ def analyze_result_markup() -> InlineKeyboardMarkup:
             InlineKeyboardButton("✅ Принять расклад",            callback_data="accept_result"),
         ],
     ])
-
 
 # === СОЗДАТЬ / ОБНОВИТЬ BridgeLogic ДЛЯ ПОЛЬЗОВАТЕЛЯ ===========================
 
@@ -752,13 +757,12 @@ async def play_card_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(str(e), show_alert=True)
         return
     await query.answer(notice, show_alert=False)
+    if not logic.legal_moves():
+        await _show_history_with_back(query, logic)
+        return
     context.user_data["show_funcs"] = False
     board_view = _pre(logic.display())
-    kb = make_board_keyboard(
-        logic,
-        False,
-        context.user_data.get("highlight_moves", False),
-    )
+    kb = make_board_keyboard(logic, False, context.user_data.get("highlight_moves", False))
     await query.edit_message_text(board_view, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
 
@@ -784,19 +788,20 @@ async def analysis_action_handler(update: Update, context: ContextTypes.DEFAULT_
     if data == "act_optimal":
         txt = logic.play_optimal_card()
         await query.answer(txt, show_alert=False)
+        if not logic.legal_moves():
+            await _show_history_with_back(query, logic)
+            return
     elif data == "act_undo":
         txt = logic.undo_last_card()
         await query.answer(txt, show_alert=False)
     elif data == "act_playtoend":
         logic.play_optimal_to_end()
         await query.answer("Доиграли до конца", show_alert=False)
+        await _show_history_with_back(query, logic)
+        return
     elif data == "act_toggle":
         context.user_data["show_funcs"] = not context.user_data.get("show_funcs", False)
-        kb = make_board_keyboard(
-            logic,
-            context.user_data["show_funcs"],
-            context.user_data.get("highlight_moves", False),
-        )
+        kb = make_board_keyboard(logic, context.user_data["show_funcs"], context.user_data.get("highlight_moves", False))
         await query.edit_message_reply_markup(reply_markup=kb)
         return
     elif data == "act_history":
@@ -806,11 +811,7 @@ async def analysis_action_handler(update: Update, context: ContextTypes.DEFAULT_
         return
     elif data == "act_back":
         board_view = _pre(logic.display())
-        kb = make_board_keyboard(
-            logic,
-            context.user_data.get("show_funcs", False),
-            context.user_data.get("highlight_moves", False),
-        )
+        kb = make_board_keyboard(logic, context.user_data.get("show_funcs", False), context.user_data.get("highlight_moves", False))
         await query.edit_message_text(text=board_view, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
         return
     elif data == "act_ddtable":
@@ -822,18 +823,8 @@ async def analysis_action_handler(update: Update, context: ContextTypes.DEFAULT_
         main_msg_id = context.user_data.get("active_msg_id")
         if main_msg_id:
             board_view = _pre(logic.display())
-            kb = make_board_keyboard(
-                logic,
-                context.user_data.get("show_funcs", False),
-                context.user_data.get("highlight_moves", False),
-            )
-            await context.bot.edit_message_text(
-                chat_id=query.message.chat_id,
-                message_id=main_msg_id,
-                text=board_view,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=kb,
-            )
+            kb = make_board_keyboard(logic, context.user_data.get("show_funcs", False), context.user_data.get("highlight_moves", False))
+            await context.bot.edit_message_text(chat_id=query.message.chat_id, message_id=main_msg_id, text=board_view, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
 
 # === Flow выбора контракта ================================================
