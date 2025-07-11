@@ -28,10 +28,19 @@ os.makedirs("img", exist_ok=True)
 # TOKEN = os.getenv("TG_TOKEN")
 TOKEN = "7976805123:AAHpYOm43hazvkXUlDY-q4X9US18upq9uak"
 AUTHORIZED_ID = [375025446, 855302541, 5458141225]
-UNLIMITED_PHOTO_ID = [375025446, 855302541]
+UNLIMITED_ID = [855302541]
 logging.basicConfig(level=logging.INFO)
 req = HTTPXRequest(connection_pool_size=10, connect_timeout=10.0, read_timeout=60.0, write_timeout=60.0, pool_timeout=10.0)
-CACHED_REQUESTS_DATABASE_NAME = "users_requests.json"
+
+
+# === ОГРАНИЧЕНИЯ ================================================================
+PHOTO_LIMIT_COUNT = 1
+PHOTO_LIMIT_INTERVAL_MIN = 30
+PBN_LIMIT_COUNT = 2
+PBN_LIMIT_INTERVAL_MIN = 30
+CACHED_PHOTO_DATABASE_NAME = "photo_requests.json"
+CACHED_PBN_DATABASE_NAME = "pbn_requests.json"
+
 
 # === СОСТОЯНИЯ ================================================================
 STATE_AWAIT_PBN = "await_pbn"
@@ -370,6 +379,25 @@ async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @require_auth
 async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    uid = update.effective_user.id
+    if uid not in UNLIMITED_ID:
+        if os.path.exists(CACHED_PBN_DATABASE_NAME):
+            with open(CACHED_PBN_DATABASE_NAME, "r") as jf:
+                database = json.load(jf)
+        else:
+            database = {}
+        interval = datetime.timedelta(minutes=PBN_LIMIT_INTERVAL_MIN)
+        now = datetime.datetime.now()
+        recent = [datetime.datetime.fromisoformat(t) for t in database.get(chat_id, []) if now - datetime.datetime.fromisoformat(t) < interval]
+        if len(recent) >= PBN_LIMIT_COUNT:
+            wait = interval - (now - min(recent))
+            await update.message.reply_text(f"Превышен лимит. Следующий запрос через {await russian_precisedelta(wait)}.")
+            return
+        recent.append(now)
+        database[chat_id] = [t.isoformat() for t in recent]
+        with open(CACHED_PBN_DATABASE_NAME, "w") as jf:
+            json.dump(database, jf)
     detector: BridgeCardDetector | None = context.user_data.get("detector")
     logic: BridgeLogic | None = context.user_data.get("logic")
     if detector:
@@ -388,11 +416,7 @@ async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"PBN (N, E, S, W):\n{_pre(pbn)}", parse_mode=ParseMode.MARKDOWN)
             context.user_data["show_funcs"] = False
             board_view = _pre(logic.display())
-            kb = make_board_keyboard(
-                logic,
-                False,
-                context.user_data.get("highlight_moves", False),
-            )
+            kb = make_board_keyboard(logic, False, context.user_data.get("highlight_moves", False))
             sent = await update.message.reply_text(board_view, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
             context.user_data["active_msg_id"] = sent.message_id
             return
@@ -894,23 +918,11 @@ async def handle_pbn_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === ОБРАБОТКА ФОТО ============================================================
 
 async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обработка фото/изображений.
-    • Если бот сейчас НЕ ждёт фото → отвечаем так же, как на «неизвестную команду».
-    • Если ждёт – продолжаем распознавание.
-    """
-    # --- если бот сейчас НЕ ожидает фото ---------------------------------
     if context.user_data.get("state") != STATE_AWAIT_PHOTO:
-        await update.message.reply_text(
-            "Я понимаю только команды.\n"
-            "Пожалуйста, общайся со мной на языке команд."
-        )
+        await update.message.reply_text("Я понимаю только команды.\nПожалуйста, общайся со мной на языке команд.")
         await _show_active_window(update, context)
         return
-
     msg = update.message
-
-    # ── приняли файл изображения ─────────────────────────────────────────
     if msg.photo:
         file = await msg.photo[-1].get_file()
         ext = ".jpg"
@@ -918,72 +930,53 @@ async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         doc = msg.document
         ext = mimetypes.guess_extension(doc.mime_type) or os.path.splitext(doc.file_name)[1]
         ext = ext.lower()
-        allowed_exts = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff"}
-        if ext not in allowed_exts:
-            await msg.reply_text(
-                f"Извините, не умею распознавать файлы «{ext}».\n"
-                "Пришлите изображение в формате: JPG, JPEG, PNG, BMP, GIF или TIFF."
-            )
+        if ext not in {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff"}:
+            await msg.reply_text(f"Извините, не умею распознавать файлы «{ext}».\nПришлите изображение в формате: JPG, JPEG, PNG, BMP, GIF или TIFF.")
             return
         file = await doc.get_file()
     else:
-        await msg.reply_text(
-            "Отправьте изображение (JPG, PNG, BMP, GIF или TIFF)."
-        )
+        await msg.reply_text("Отправьте изображение (JPG, PNG, BMP, GIF или TIFF).")
         return
-
-    # ── дальше без изменений: лимиты, скачивание, распознавание ──────────
     chat_id = str(msg.chat_id)
     uid = update.effective_user.id
-    if uid not in UNLIMITED_PHOTO_ID:
-        if os.path.exists(CACHED_REQUESTS_DATABASE_NAME):
-            with open(CACHED_REQUESTS_DATABASE_NAME, "r") as jf:
+    if uid not in UNLIMITED_ID:
+        if os.path.exists(CACHED_PHOTO_DATABASE_NAME):
+            with open(CACHED_PHOTO_DATABASE_NAME, "r") as jf:
                 database = json.load(jf)
         else:
             database = {}
+        interval = datetime.timedelta(minutes=PHOTO_LIMIT_INTERVAL_MIN)
         now = datetime.datetime.now()
-        if chat_id in database:
-            diff = now - datetime.datetime.fromisoformat(database[chat_id][0])
-            wait = datetime.timedelta(minutes=10) - diff
-            if len(database[chat_id]) > 2 or (len(database[chat_id]) == 2 and wait.total_seconds() > 0):
-                await msg.reply_text(
-                    f"Превышен лимит. Следующее распознавание через {await russian_precisedelta(wait)}."
-                )
-                return
-            if len(database[chat_id]) == 2:
-                database[chat_id].pop(0)
-            database[chat_id].append(now.isoformat())
-        else:
-            database[chat_id] = [now.isoformat()]
-        with open(CACHED_REQUESTS_DATABASE_NAME, "w") as jf:
+        recent = [datetime.datetime.fromisoformat(t) for t in database.get(chat_id, []) if now - datetime.datetime.fromisoformat(t) < interval]
+        if len(recent) >= PHOTO_LIMIT_COUNT:
+            wait = interval - (now - min(recent))
+            await msg.reply_text(f"Превышен лимит. Следующее распознавание через {await russian_precisedelta(wait)}.")
+            return
+        recent.append(now)
+        database[chat_id] = [t.isoformat() for t in recent]
+        with open(CACHED_PHOTO_DATABASE_NAME, "w") as jf:
             json.dump(database, jf)
-
     inp = generate_filename()
     out = generate_filename()
     path = await file.download_to_drive(inp)
     await msg.reply_text("Фото принято. Распознаю карты...")
-
     try:
         detector = BridgeCardDetector(path)
         detector.visualize(out)
         preview = detector.preview()
-
         with open(out, "rb") as img:
             await msg.reply_photo(photo=img)
-        sent = await msg.reply_text(
-            _pre(preview),
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=analyze_result_markup(),
-        )
+        sent = await msg.reply_text(_pre(preview), parse_mode=ParseMode.MARKDOWN, reply_markup=analyze_result_markup())
         context.user_data["active_msg_id"] = sent.message_id
         context.user_data["detector"] = detector
-
     except Exception as e:
         await msg.reply_text(f"Ошибка распознавания: {e}")
     finally:
         for fn in (inp, out):
-            try: os.remove(fn)
-            except OSError: pass
+            try:
+                os.remove(fn)
+            except OSError:
+                pass
         context.user_data.pop("state", None)
 
 # === ГЛАВНАЯ ФУНКЦИЯ ===========================================================
