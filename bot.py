@@ -45,6 +45,9 @@ STATE_MOVE_CARD_SELECT_CARD  = "move_card_select_card"
 STATE_MOVE_CARD_SELECT_DEST  = "move_card_select_dest"
 STATE_CONTRACT_CHOOSE_DENOM = "contract_choose_denom"
 STATE_CONTRACT_CHOOSE_FIRST = "contract_choose_first"
+STATE_GOTO_TRICK_SELECT_TRICK = "goto_trick_select_trick"
+STATE_GOTO_TRICK_SELECT_CARD  = "goto_trick_select_card"
+
 
 SUITS = ("S", "H", "D", "C")
 RANKS = ("A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2")
@@ -152,42 +155,54 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === ХЕЛПЕРЫ ДЛЯ КЛАВИАТУР ====================================================
 
-# ───── клавиатура анализа (карты / функции) ─────
-def make_board_keyboard(logic: BridgeLogic, show_funcs: bool = False) -> InlineKeyboardMarkup:
-    """
-    • Всегда есть верхний ряд: [Оптимальный ход] [Отменить ход]
-    • Всегда есть нижняя кнопка: [...]
-    • В «карточном» режиме между ними выводятся карты текущего игрока.
-    • В «функциональном» режиме вместо карт выводится:
-         [История] [DD-таблица] [Доиграть до конца]
-    """
-    rows: list[list[InlineKeyboardButton]] = []
+def goto_trick_keyboard(total: int) -> InlineKeyboardMarkup:
+    rows = []
+    nums = [str(i) for i in range(1, total + 1)]
+    for part in chunk(nums, 4):
+        rows.append([InlineKeyboardButton(n, callback_data=f"goto_trick_{n}") for n in part])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="goto_cancel")])
+    return InlineKeyboardMarkup(rows)
 
+
+def goto_card_keyboard(cards: list[str]) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(lbl, callback_data=f"goto_card_{idx + 1}")
+             for idx, lbl in enumerate(cards)]]
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="goto_cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def make_board_keyboard(logic: BridgeLogic, show_funcs: bool = False, highlight: bool = False) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
     rows.append([
         InlineKeyboardButton("Оптимальный ход", callback_data="act_optimal"),
         InlineKeyboardButton("Отменить ход",     callback_data="act_undo"),
     ])
-
     if show_funcs:
         rows.append([
-            InlineKeyboardButton("История",        callback_data="act_history"),
-            InlineKeyboardButton("DD-таблица",     callback_data="act_ddtable"),
+            InlineKeyboardButton("История",           callback_data="act_history"),
+            InlineKeyboardButton("DD-таблица",        callback_data="act_ddtable"),
             InlineKeyboardButton("Доиграть до конца", callback_data="act_playtoend"),
+        ])
+        rows.append([
+            InlineKeyboardButton(
+                "Подсветить ходы 🔦" if not highlight else "Обычные кнопки ↩️",
+                callback_data="act_highlight",
+            ),
+            InlineKeyboardButton("⤴️ К карте", callback_data="act_gotocard"),
         ])
     else:
         moves = logic.legal_moves()
+        trick_map = logic.move_options() if highlight else {}
         for suit in SUITS:
             suit_cards = [c for c in moves if c.endswith(suit)]
             suit_cards.sort(key=lambda c: RANKS.index(c[0]))
             for part in chunk(suit_cards, 7):
-                rows.append([
-                    InlineKeyboardButton(_pretty(c), callback_data=f"play_{c}")
-                    for c in part
-                ])
-
-    # ─── нижний ряд ───
+                btns = []
+                for c in part:
+                    label = f"{_pretty(c)}: {trick_map[c]}" if c in trick_map else _pretty(c)
+                    btns.append(InlineKeyboardButton(label, callback_data=f"play_{c}"))
+                rows.append(btns)
     rows.append([InlineKeyboardButton("…", callback_data="act_toggle")])
-
     return InlineKeyboardMarkup(rows)
 
 
@@ -322,15 +337,8 @@ async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if detector:
         try:
             pbn = detector.to_pbn()
-            await update.message.reply_text(
-                f"PBN (N, E, S, W):\n{_pre(pbn)}",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            sent = await update.message.reply_text(
-                _pre(detector.preview()),
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=analyze_result_markup()
-            )
+            await update.message.reply_text(f"PBN (N, E, S, W):\n{_pre(pbn)}", parse_mode=ParseMode.MARKDOWN)
+            sent = await update.message.reply_text(_pre(detector.preview()), parse_mode=ParseMode.MARKDOWN, reply_markup=analyze_result_markup())
             context.user_data["active_msg_id"] = sent.message_id
             return
         except Exception as e:
@@ -339,24 +347,22 @@ async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if logic:
         try:
             pbn = logic.to_pbn()
-            await update.message.reply_text(
-                f"PBN (N, E, S, W):\n{_pre(pbn)}",
-                parse_mode=ParseMode.MARKDOWN
-            )
+            await update.message.reply_text(f"PBN (N, E, S, W):\n{_pre(pbn)}", parse_mode=ParseMode.MARKDOWN)
             context.user_data["show_funcs"] = False
             board_view = _pre(logic.display())
-            kb = make_board_keyboard(logic, False)
-            sent = await update.message.reply_text(
-                board_view,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=kb
+            kb = make_board_keyboard(
+                logic,
+                False,
+                context.user_data.get("highlight_moves", False),
             )
+            sent = await update.message.reply_text(board_view, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
             context.user_data["active_msg_id"] = sent.message_id
             return
         except Exception as e:
             await update.message.reply_text(f"Ошибка получения PBN из логики: {e}")
             return
     await update.message.reply_text("❌ Нет активного расклада для вывода PBN.")
+
 
 
 async def russian_precisedelta(delta: datetime.timedelta):
@@ -373,10 +379,101 @@ async def russian_precisedelta(delta: datetime.timedelta):
         humanized = humanized[:-1] + "у"
     return humanized
 
-
 # === CALLBACK‑КНОПКИ ===========================================================
 
-@require_auth
+@require_fresh_window
+@ignore_telegram_edit_errors
+async def goto_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data  = query.data
+    logic: BridgeLogic | None = context.user_data.get("logic")
+    if logic is None:
+        await query.answer("Нет активной сдачи.", show_alert=True)
+        return
+
+    if data == "act_gotocard":
+        tricks, unknown = logic.history_matrix()
+        if not tricks:
+            await query.answer("Взяток нет")
+            return
+        context.user_data.update(state="goto_trick_select", unknown_shift=unknown)
+        txt = _pre("\n".join(logic.history_plain_lines()) + "\n\nВыберите номер взятки:")
+        await query.edit_message_text(
+            txt,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=goto_trick_keyboard(len(tricks)),
+        )
+        return
+
+    state = context.user_data.get("state")
+
+    if state == "goto_trick_select" and data.startswith("goto_trick_"):
+        tno = int(data.split("_")[-1])
+        tricks, _ = logic.history_matrix()
+        cards = tricks[tno - 1]
+        context.user_data.update(state="goto_card_select", pending_trick_no=tno)
+        single_line = logic.history_plain_lines()[tno - 1]
+        txt = _pre(f"{single_line}\n\nВзятка {tno}. Выберите карту:")
+        await query.edit_message_text(
+            txt,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=goto_card_keyboard(cards),
+        )
+        return
+
+    if state == "goto_card_select" and data.startswith("goto_card_"):
+        cno = int(data.split("_")[-1])
+        tno = context.user_data.get("pending_trick_no")
+        shift = context.user_data.get("unknown_shift", 0)
+        try:
+            logic.goto_card(shift + tno, cno)
+        except ValueError as e:
+            await query.answer(str(e), show_alert=True)
+            return
+        for k in ("state", "pending_trick_no", "unknown_shift"):
+            context.user_data.pop(k, None)
+        kb = make_board_keyboard(
+            logic,
+            False,
+            context.user_data.get("highlight_moves", False),
+        )
+        await query.edit_message_text(
+            _pre(logic.display()),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb,
+        )
+        await query.answer("Переместились")
+        return
+
+    if data == "goto_cancel":
+        if state == "goto_card_select":
+            # вернуться к выбору взятки
+            context.user_data["state"] = "goto_trick_select"
+            context.user_data.pop("pending_trick_no", None)
+            tricks, _ = logic.history_matrix()
+            txt = _pre("\n".join(logic.history_plain_lines()) + "\n\nВыберите номер взятки:")
+            await query.edit_message_text(
+                txt,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=goto_trick_keyboard(len(tricks)),
+            )
+            await query.answer()
+            return
+        for k in ("state", "unknown_shift"):
+            context.user_data.pop(k, None)
+        kb = make_board_keyboard(
+            logic,
+            context.user_data.get("show_funcs", False),
+            context.user_data.get("highlight_moves", False),
+        )
+        await query.edit_message_text(
+            _pre(logic.display()),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb,
+        )
+        await query.answer("Отменено")
+
+
 @require_fresh_window
 @ignore_telegram_edit_errors
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -457,7 +554,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer("Неизвестная кнопка", show_alert=True)
 
 
-@require_auth
 @require_fresh_window
 @ignore_telegram_edit_errors
 async def analyze_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -531,7 +627,6 @@ async def analyze_result_handler(update: Update, context: ContextTypes.DEFAULT_T
             await query.message.reply_text(f"Ошибка: {e}")
 
 
-@require_auth
 @require_fresh_window
 @ignore_telegram_edit_errors
 async def add_move_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -650,7 +745,6 @@ async def add_move_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
 
-@require_auth
 @require_fresh_window
 @ignore_telegram_edit_errors
 async def play_card_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -669,97 +763,89 @@ async def play_card_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer(notice, show_alert=False)
     context.user_data["show_funcs"] = False
     board_view = _pre(logic.display())
-    kb = make_board_keyboard(logic, False)
-    await query.edit_message_text(
-        board_view,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=kb
+    kb = make_board_keyboard(
+        logic,
+        False,
+        context.user_data.get("highlight_moves", False),
     )
+    await query.edit_message_text(board_view, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
 
-@require_auth
 @require_fresh_window
 @ignore_telegram_edit_errors
 async def analysis_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает act_* callbacks и обновляет позицию / клавиатуру."""
     query = update.callback_query
-    data  = query.data
+    data = query.data
     logic: BridgeLogic | None = context.user_data.get("logic")
     if logic is None:
         await query.answer("Нет активной сдачи.", show_alert=True)
         return
-
+    if data == "act_highlight":
+        flag = context.user_data.get("highlight_moves", False)
+        context.user_data["highlight_moves"] = not flag
+        context.user_data["show_funcs"] = False
+        kb = make_board_keyboard(logic, False, not flag)
+        board_view = _pre(logic.display())
+        await query.edit_message_text(board_view, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+        await query.answer("Подсветка ходов включена" if not flag else "Подсветка выключена")
+        return
     need_redraw = True
-
     if data == "act_optimal":
         txt = logic.play_optimal_card()
         await query.answer(txt, show_alert=False)
-
     elif data == "act_undo":
         txt = logic.undo_last_card()
         await query.answer(txt, show_alert=False)
-
     elif data == "act_playtoend":
         logic.play_optimal_to_end()
         await query.answer("Доиграли до конца", show_alert=False)
-
     elif data == "act_toggle":
         context.user_data["show_funcs"] = not context.user_data.get("show_funcs", False)
-        kb = make_board_keyboard(logic, context.user_data["show_funcs"])
+        kb = make_board_keyboard(
+            logic,
+            context.user_data["show_funcs"],
+            context.user_data.get("highlight_moves", False),
+        )
         await query.edit_message_reply_markup(reply_markup=kb)
         return
-
     elif data == "act_history":
         txt = _pre(logic.show_history())
-        back_kb = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("⬅️ Назад", callback_data="act_back")]]
-        )
-        await query.edit_message_text(
-            text=txt,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=back_kb
-        )
+        back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="act_back")]])
+        await query.edit_message_text(text=txt, parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb)
         return
-
     elif data == "act_back":
         board_view = _pre(logic.display())
-        kb = make_board_keyboard(logic, context.user_data.get("show_funcs", False))
-        await query.edit_message_text(
-            text=board_view,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=kb
+        kb = make_board_keyboard(
+            logic,
+            context.user_data.get("show_funcs", False),
+            context.user_data.get("highlight_moves", False),
         )
+        await query.edit_message_text(text=board_view, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
         return
-
-
     elif data == "act_ddtable":
         txt = _pre(logic.dd_table())
-        back_kb = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("⬅️ Назад", callback_data="act_back")]]
-        )
-        await query.edit_message_text(
-            text=txt,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=back_kb
-        )
+        back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="act_back")]])
+        await query.edit_message_text(text=txt, parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb)
         return
-
-
-    main_msg_id = context.user_data.get("active_msg_id")
-    if need_redraw and main_msg_id:
-        board_view = _pre(logic.display())
-        kb = make_board_keyboard(logic, context.user_data.get("show_funcs", False))
-        await context.bot.edit_message_text(
-            chat_id=query.message.chat_id,
-            message_id=main_msg_id,
-            text=board_view,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=kb
-        )
+    if need_redraw:
+        main_msg_id = context.user_data.get("active_msg_id")
+        if main_msg_id:
+            board_view = _pre(logic.display())
+            kb = make_board_keyboard(
+                logic,
+                context.user_data.get("show_funcs", False),
+                context.user_data.get("highlight_moves", False),
+            )
+            await context.bot.edit_message_text(
+                chat_id=query.message.chat_id,
+                message_id=main_msg_id,
+                text=board_view,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=kb,
+            )
 
 
 # === Flow выбора контракта ================================================
-@require_auth
 @require_fresh_window
 @ignore_telegram_edit_errors
 async def contract_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -773,10 +859,7 @@ async def contract_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
         token = data.split("_", 1)[1]
         context.user_data["chosen_denom"] = token
         context.user_data["state"] = STATE_CONTRACT_CHOOSE_FIRST
-        await query.edit_message_text(
-            "Кто делает первый ход?",
-            reply_markup=contract_first_keyboard()
-        )
+        await query.edit_message_text("Кто делает первый ход?", reply_markup=contract_first_keyboard())
         return
     if data.startswith("first_"):
         first = data.split("_", 1)[1]
@@ -792,18 +875,17 @@ async def contract_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("Приступаю к анализу...")
         context.user_data["show_funcs"] = False
         board_view = _pre(logic.display())
-        kb = make_board_keyboard(logic, False)
-        sent = await query.message.reply_text(
-            board_view,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=kb
+        kb = make_board_keyboard(
+            logic,
+            False,
+            context.user_data.get("highlight_moves", False),
         )
+        sent = await query.message.reply_text(board_view, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
         context.user_data["active_msg_id"] = sent.message_id
 
 
 # === ТЕКСТОВЫЙ ВВОД ============================================================
 
-@require_auth
 async def handle_pbn_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("state") != STATE_AWAIT_PBN:
         await unknown_message(update, context)
@@ -829,7 +911,6 @@ async def handle_pbn_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === ОБРАБОТКА ФОТО ============================================================
 
-@require_auth
 async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка фото/файла-изображения при STATE_AWAIT_PHOTO"""
     if context.user_data.get("state") != STATE_AWAIT_PHOTO:
@@ -969,7 +1050,11 @@ def main():
     app.add_handler(CallbackQueryHandler(play_card_handler, pattern="^play_"))
     app.add_handler(CallbackQueryHandler(
         analysis_action_handler,
-        pattern="^act_(optimal|undo|toggle|history|ddtable|playtoend|back)$"))
+        pattern="^act_(optimal|undo|toggle|history|ddtable|playtoend|back|highlight)$"
+    ))
+    app.add_handler(CallbackQueryHandler(
+        goto_flow_handler,
+        pattern="^(act_gotocard|goto_trick_\\d+|goto_card_\\d+|goto_cancel)$"))
 
     # === Последний — ловит вообще всё ===
     app.add_handler(MessageHandler(filters.ALL, unknown_message))

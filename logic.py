@@ -374,7 +374,7 @@ class BridgeLogic:
 
         return "\n".join(lines)
 
-    def move_options(self) -> Dict[str, int]:
+    def move_options(self) -> dict[str, int]:
         """
         Возвращает словарь возможных ходов текущего игрока
         формата {'AS': 8, 'KH': 7, …},
@@ -385,17 +385,11 @@ class BridgeLogic:
 
         Требует предварительно заданного контракта.
         """
-        if self.contract is None:
-            raise RuntimeError("Сначала задайте контракт.")
-
-        self.deal.trump = self.contract
-
-        options: Dict[str, int] = {}
-        for card, tricks in solve_board(self.deal):
-            token = f"{card_rank(card)}{card_suit(card)}"
-            options[token] = tricks
-
-        return options
+        pl = self.current_player()
+        if not self.deal[pl]:
+            return {}
+        results = list(solve_board(self.deal))
+        return {f"{card_rank(c)}{card_suit(c)}": tricks for c, tricks in results}
 
     # ───── служебные проверки ─────
     @staticmethod
@@ -617,6 +611,48 @@ class BridgeLogic:
 
         out += ["", f"Текущее состояние: NS – {ns}, EW – {ew}", ""]
         return "\n".join(out)
+
+    def history_matrix(self) -> tuple[list[list[str]], int]:
+        """
+        Возвращает (tricks, unknown),
+        где  tricks  – список взяток (каждая — list[str] вида 'N♠A'),
+             unknown – сколько ранних взяток неизвестно (N: —).
+
+        Неполная текущая взятка включается последней.
+        """
+        unknown = 13 - self._start_len
+
+        seqs: list[list[tuple[Player, Card]]] = []
+        seqs.extend(self._trick_history)
+        seqs.extend(self._auto_plan)
+        if self._current:
+            seqs.append(self._current)
+
+        tricks: list[list[str]] = [
+            [fmt_card_full(pl, c) for pl, c in trick] for trick in seqs
+        ]
+        return tricks, unknown
+
+    # ───── история строками без заголовков ─────
+    def history_plain_lines(self) -> list[str]:
+        """
+        Возвращает список строк вида
+            ' 1: W♠K  N♠2  E♠3  S♠4'
+            ' 2: …'
+        без заголовков и счёта.
+        """
+        tricks: list[list[tuple[Player, Card]]] = []
+        tricks.extend(self._trick_history)
+        tricks.extend(self._auto_plan)
+        if self._current:
+            tricks.append(self._current)
+
+        lines: list[str] = []
+        for idx, trick in enumerate(tricks, 1):
+            seq = "  ".join(fmt_card_full(pl, c) for pl, c in trick)
+            lines.append(f"{idx:2}: {seq}")
+        return lines
+
 
     # ───── тихий откат автоплана ─────
     def _clear_auto(self):
