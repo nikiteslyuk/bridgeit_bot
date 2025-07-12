@@ -269,6 +269,12 @@ class BridgeLogic:
         for s in suits:
             lines.append(spacing_NS + blk[Player.south][s])
 
+        icon = "—"
+        if self.contract is not None:
+            icon = "NT" if self.contract is Denom.nt else SUIT_ICONS[self.contract.name.upper()[0]]
+        lines.append("")
+        lines.append(f"Масть контракта: {icon}")
+
         return "\n".join(lines)
 
     # ───── DD-таблица исходной сдачи ─────
@@ -652,7 +658,6 @@ class BridgeLogic:
             seq = "  ".join(fmt_card_full(pl, c) for pl, c in trick)
             lines.append(f"{idx:2}: {seq}")
         return lines
-
 
     # ───── тихий откат автоплана ─────
     def _clear_auto(self):
