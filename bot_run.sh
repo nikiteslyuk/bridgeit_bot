@@ -1,9 +1,6 @@
 #!/bin/bash
 set -e
 
-echo "[bridgeit] Git pull"
-git pull
-
 echo "[bridgeit] Activating virtual environment"
 source venv/bin/activate
 
