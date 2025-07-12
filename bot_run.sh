@@ -5,7 +5,6 @@ echo "[bridgeit] Git pull"
 git pull
 
 echo "[bridgeit] Activating virtual environment"
-python3 -m venv venv
 source venv/bin/activate
 
 echo "[bridgeit] Install deps"
