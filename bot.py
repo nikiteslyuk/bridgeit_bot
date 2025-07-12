@@ -444,8 +444,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("state", None)
     sent = await update.message.reply_text(
-        "Я нахожусь на стадии закрытого бета‑тестирования.\n"
-        "Тыкай на кнопки, ищи баги и пиши создателю: @bridgeit_support!",
+        "Привет! Я Бриджит — кроссплатформенный ультимативный анализатор бриджевых сдач. "
+        "Чем займёмся на этот раз?",
         reply_markup=main_menu_markup(),
     )
     context.user_data["active_msg_id"] = sent.message_id
@@ -466,7 +466,7 @@ async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         recent = [datetime.datetime.fromisoformat(t) for t in database.get(chat_id, []) if now - datetime.datetime.fromisoformat(t) < interval]
         if len(recent) >= PBN_LIMIT_COUNT:
             wait = interval - (now - min(recent))
-            await update.message.reply_text(f"Превышен лимит. Следующий запрос через {await russian_precisedelta(wait)}.")
+            await update.message.reply_text(f"🚫 Превышен лимит. Следующий запрос PBN через {await russian_precisedelta(wait)}.")
             return
         recent.append(now)
         database[chat_id] = [t.isoformat() for t in recent]
@@ -631,7 +631,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "input_pbn":
         context.user_data["state"] = STATE_AWAIT_PBN
         await query.edit_message_text(
-            "Введите PBN-строку расклада:",
+            "📄 Пришлите PBN-строку расклада:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_main")]]),
         )
         return
@@ -639,7 +639,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "input_photo":
         context.user_data["state"] = STATE_AWAIT_PHOTO
         await query.edit_message_text(
-            "Пришлите фото расклада для распознавания:",
+            "📷 Пришлите фото расклада для распознавания:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_main")]]),
         )
         return
@@ -945,7 +945,7 @@ async def contract_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
         token = data.split("_", 1)[1]
         context.user_data["chosen_denom"] = token
         context.user_data["state"] = STATE_CONTRACT_CHOOSE_FIRST
-        await query.edit_message_text("Кто делает первый ход?", reply_markup=contract_first_keyboard())
+        await query.edit_message_text("Выберите кто делает первый ход:", reply_markup=contract_first_keyboard())
         return
     if data.startswith("first_"):
         first = data.split("_", 1)[1]
@@ -958,7 +958,7 @@ async def contract_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as e:
             await query.edit_message_text(f"Ошибка: {e}")
             return
-        await query.edit_message_text("Приступаю к анализу...")
+        await query.edit_message_text("⏳ Приступаю к анализу...")
         context.user_data["show_funcs"] = False
         board_view = _pre(logic.display())
         kb = make_board_keyboard(
@@ -1030,7 +1030,7 @@ async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         recent = [datetime.datetime.fromisoformat(t) for t in database.get(chat_id, []) if now - datetime.datetime.fromisoformat(t) < interval]
         if len(recent) >= PHOTO_LIMIT_COUNT:
             wait = interval - (now - min(recent))
-            await msg.reply_text(f"Превышен лимит. Следующее распознавание через {await russian_precisedelta(wait)}.")
+            await msg.reply_text(f"🚫 Превышен лимит. Следующее распознавание через {await russian_precisedelta(wait)}.")
             return
         recent.append(now)
         database[chat_id] = [t.isoformat() for t in recent]
@@ -1039,7 +1039,7 @@ async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     inp = generate_filename()
     out = generate_filename()
     path = await file.download_to_drive(inp)
-    await msg.reply_text("Фото принято. Распознаю карты...")
+    await msg.reply_text("⏳ Фото принято. Распознаю карты...")
     try:
         detector = BridgeCardDetector(path)
         detector.visualize(out)
