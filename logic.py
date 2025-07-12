@@ -3,11 +3,6 @@
 
 from __future__ import annotations
 
-import io
-import sys
-import contextlib
-
-import copy
 import re
 from typing import Dict, List, Tuple
 
@@ -139,8 +134,15 @@ class BridgeLogic:
     # ───── может быть ValueError ─────
     def __init__(self, pbn: str):
         self._pbn_str = pbn_ok(pbn)
-        self.deal = Deal.from_pbn(pbn_ok(pbn))
-        self._orig_deal = copy.deepcopy(self.deal)
+        self.deal = Deal.from_pbn(self._pbn_str)
+
+        self._orig_pbn = self._pbn_str
+
+        self._dd_ref_deal = (
+            self.deal.clone() if hasattr(self.deal, "clone")
+            else Deal.from_pbn(self._pbn_str)
+        )
+
         self._start_len = len(self.deal[Player.north])
 
         if len({len(self.deal[p]) for p in Player}) != 1:
@@ -149,12 +151,15 @@ class BridgeLogic:
         self.contract: Denom | None = None
         self.declarer: Player | None = None
 
+        # история розыгрыша
         self._trick_history: List[List[Tuple[Player, Card]]] = []
         self._trick_manual_flags: List[List[bool]] = []
 
+        # текущая (неполная) взятка
         self._current: List[Tuple[Player, Card]] = []
         self._current_manual: List[bool] = []
 
+        # план автодоигрыша
         self._auto_plan: List[List[Tuple[Player, Card]]] = []
         self._auto_manual_flags: List[List[bool]] = []
 
@@ -278,11 +283,12 @@ class BridgeLogic:
         return "\n".join(lines)
 
     # ───── DD-таблица исходной сдачи ─────
+    # ───── DD-таблица исходной сдачи ─────
     def dd_table(self) -> str:
-        if not all(len(self._orig_deal[p]) == 13 for p in Player):
+        if not all(len(self._dd_ref_deal[p]) == 13 for p in Player):
             return "В исходной сдаче не по 13 карт — DDS недоступен."
 
-        dd = calc_dd_table(self._orig_deal)
+        dd = calc_dd_table(self._dd_ref_deal)
 
         denoms = [Denom.clubs, Denom.diamonds, Denom.hearts,
                   Denom.spades, Denom.nt]
@@ -750,7 +756,7 @@ class BridgeLogic:
         Возвращает строку:
             «Откатились к взятке N, карта M.»
 
-        При неверных параметрах по-прежнему возбуждает ValueError.
+        При неверных параметрах возбуждает ValueError.
         """
         if not (1 <= card_no <= 4):
             raise ValueError("Номер карты 1–4.")
@@ -768,7 +774,9 @@ class BridgeLogic:
         target_trick = full_tricks[idx]
         target_flags = full_flags[idx]
 
-        self.deal = copy.deepcopy(self._orig_deal)
+        self.deal = Deal.from_pbn(self._orig_pbn)
+
+        # обнуляем оперативные структуры
         self._trick_history.clear()
         self._trick_manual_flags.clear()
         self._auto_plan.clear()
@@ -780,20 +788,30 @@ class BridgeLogic:
 
         for i in range(idx):
             seq, fl = full_tricks[i], full_flags[i]
-            for _, c in seq:
-                self.deal.play(c)
+
+            self.deal.first = seq[0][0]
+
+            for _, old_card in seq:
+                self.deal.play(Card(str(old_card)))
+
             self._trick_history.append(seq)
             self._trick_manual_flags.append(fl)
+
             self.deal.first = trick_winner(seq, trump)
 
+        # ── 2. начинаем целевую взятку ─────────────────────────────────────
         self.deal.first = target_trick[0][0]
+
         for j in range(card_no - 1):
-            pl, card = target_trick[j]
-            self.deal.play(card)
-            self._current.append((pl, card))
+            pl, old_card = target_trick[j]
+            new_card = Card(str(old_card))
+            self.deal.play(new_card)
+            self._current.append((pl, new_card))
             self._current_manual.append(target_flags[j])
 
         return f"Откатились к взятке {trick_no}, карта {card_no}."
+
+
 
     def play_optimal_card(self, *, announce: bool = True) -> str:
         """

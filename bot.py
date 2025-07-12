@@ -19,10 +19,11 @@ from telegram.constants import ParseMode
 
 from telegram.request import HTTPXRequest
 
-
-
-from logic import BridgeLogic, card_rank, SUIT_ICONS, ICON2LTR
+from logic import BridgeLogic, SUIT_ICONS
 from detection import BridgeCardDetector
+
+
+
 os.makedirs("img", exist_ok=True)
 
 # TOKEN = os.getenv("TG_TOKEN")
@@ -54,8 +55,6 @@ STATE_MOVE_CARD_SELECT_CARD  = "move_card_select_card"
 STATE_MOVE_CARD_SELECT_DEST  = "move_card_select_dest"
 STATE_CONTRACT_CHOOSE_DENOM = "contract_choose_denom"
 STATE_CONTRACT_CHOOSE_FIRST = "contract_choose_first"
-STATE_GOTO_TRICK_SELECT_TRICK = "goto_trick_select_trick"
-STATE_GOTO_TRICK_SELECT_CARD  = "goto_trick_select_card"
 
 
 SUITS = ("S", "H", "D", "C")
@@ -329,21 +328,6 @@ def main_menu_markup() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📷 Анализ расклада по фото", callback_data="input_photo")],
         [InlineKeyboardButton("📄 Анализ расклада по PBN",  callback_data="input_pbn")],
         [InlineKeyboardButton("📘 Документация",       callback_data="menu_docs")],
-    ])
-
-
-def analyze_menu_markup() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📷 Распознать по фото", callback_data="input_photo")],
-        [InlineKeyboardButton("📄 Распознать по PBN", callback_data="input_pbn")],
-        [InlineKeyboardButton("🎲 Сгенерировать сдачу", callback_data="generate_deal")],
-        [InlineKeyboardButton("⬅️ Назад", callback_data="back_main")],
-    ])
-
-
-def back_to_analyze_markup() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⬅️ Назад", callback_data="back_analyze")],
     ])
 
 
@@ -744,10 +728,14 @@ async def add_move_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     # --- отмена операции -----------------------------------------------------
     if data == "cancel_add_move":
-        context.user_data.pop("state", None)
-        context.user_data.pop("pending_card", None)
-        context.user_data.pop("pending_hand_src", None)
-        await query.edit_message_reply_markup(reply_markup=analyze_result_markup())
+        for k in ("state", "pending_card", "pending_hand_src"):
+            context.user_data.pop(k, None)
+
+        await query.edit_message_text(
+            _pre(detector.preview()),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=analyze_result_markup(),
+        )
         await query.answer("Операция отменена")
         return
 
@@ -1086,7 +1074,7 @@ def main():
     app.add_handler(CallbackQueryHandler(add_move_flow_handler, pattern="^(add_card_start|move_card_start|sel_card_.*|hand_[NESW]|cancel_add_move)$"))
 
     # Кнопки анализа расклада (после распознавания)
-    app.add_handler(CallbackQueryHandler(analyze_result_handler, pattern="^(rotate_cw|rotate_ccw|accept_result|to_pbn)$"))
+    app.add_handler(CallbackQueryHandler(analyze_result_handler, pattern="^(rotate_cw|rotate_ccw|accept_result)$"))
 
     app.add_handler(CallbackQueryHandler(contract_flow_handler, pattern="^(denom_[CDHS]|denom_NT|first_[NESW])$"))
 
