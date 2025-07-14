@@ -144,29 +144,83 @@ class BridgeCardDetector:
 
         return "\n".join(lines)
 
-    def visualize(self, save: str):
+    def visualize(self, save: str, *, debug: bool = False):
         """
-        Сохранить изображение с разметкой карт по указанному пути.
+        Сохранить изображение с разметкой карт.
 
-        :param save: строка с полным путём/именем файла.  
-                     Если пустая строка или None, вызывается ValueError.
+        Parameters
+        ----------
+        save : str
+            Путь, куда сохранить картинку.
+        debug : bool, default = False
+            • False — классическая разметка (цвет по рукам, подпись – буква руки).
+            • True  — отладочная: цвет по *масти*, надпись «карта  уверенность».
+              Подписи автоматически «расходятся» по вертикали, чтобы не налегать
+              друг на друга.
         """
         if not save:
             raise ValueError("Путь для сохранения изображения должен быть задан.")
 
         img = cv2.imread(str(self.img_path))
         if img is None:
-            raise FileNotFoundError(f"Не удалось открыть исходное изображение: {self.img_path}")
+            raise FileNotFoundError(f"Не удалось открыть изображение: {self.img_path}")
 
-        cols = {"N": (255, 0, 0),
-                "S": (0, 255, 0),
-                "E": (0, 0, 255),
-                "W": (0, 255, 255)}
+        # ---------- цветовая схема ------------------------------------------
+        if debug:
+            suit_colors = {
+                "S": (255,  50,  50),
+                "H": ( 50,  50, 255),
+                "D": (  0, 165, 255),
+                "C": ( 50, 255,  50),
+            }
+            get_color = lambda raw, *_: suit_colors[self._norm_card(raw)[1]]
+        else:
+            player_colors = {"N": (255,   0,   0),
+                             "S": (  0, 255,   0),
+                             "E": (  0,   0, 255),
+                             "W": (  0, 255, 255)}
+            get_color = lambda *_args: player_colors[_args[-1]]
 
-        for x1, y1, x2, y2, raw, pl in self._dets:
-            cv2.rectangle(img, (x1, y1), (x2, y2), cols[pl], 2)
-            cv2.putText(img, pl, (x1, y1 - 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, cols[pl], 2)
+        # ----------- помощник для разведения подписей -----------------------
+        occupied: list[Tuple[int, int, int, int]] = []  # x, y, w, h ранее размещённого текста
+
+        def place_text(box, txt_size):
+            """Вернуть смещение dy так, чтобы текст не перекрывал уже занятые z-оны."""
+            x1, y1, _, _ = box
+            w, h = txt_size
+            dy = 0
+            while any(
+                abs((y1 - dy) - oy) < h + 6 and abs(x1 - ox) < w
+                for ox, oy, w, h in occupied
+            ):
+                dy += h + 6
+            occupied.append((x1, y1 - dy, w, h))
+            return dy
+
+        # ----------- наносим рамки и подписи --------------------------------
+        for det in self._dets:
+            x1, y1, x2, y2, raw, pl, *rest = det
+            conf = rest[0] if rest else 0.0
+
+            color = get_color(raw, pl)
+            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+
+            if debug:
+                label = self._norm_card(raw)
+                text  = f"{label} {conf:.2f}"
+            else:
+                text  = pl
+
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+            offset = place_text((x1, y1, x2, y2), (tw, th))
+
+            cv2.rectangle(img,
+                          (x1, y1 - th - 6 - offset),
+                          (x1 + tw + 4, y1 - offset),
+                          color, -1)
+            cv2.putText(img, text, (x1 + 2, y1 - 4 - offset),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                        (255, 255, 255), 1, cv2.LINE_AA)
 
         cv2.imwrite(save, img)
 
@@ -314,7 +368,7 @@ class BridgeCardDetector:
         # =========================================================
         #        П О В Т О Р Н А Я   П Р О В Е Р К А
         # =========================================================
-        DIST_THRESH = 20.0
+        DIST_THRESH = 90.0
 
         for idx, (x1, y1, x2, y2, raw, pl) in enumerate(self._dets):
             cx = (x1 + x2) / 2
@@ -442,7 +496,19 @@ class BridgeCardDetector:
 
 # ──────────── демо ────────────
 if __name__ == "__main__":
-    det = BridgeCardDetector.from_pbn("T652.7652.Q6.AKJ 3.3.T97532.Q9853 Q4.AKQ984.AK4.76 AKJ987.JT.J8.T42")
-    # det = BridgeCardDetector('img/567.jpg')
+    # det = BridgeCardDetector.from_pbn("T652.7652.Q6.AKJ 3.3.T97532.Q9853 Q4.AKQ984.AK4.76 AKJ987.JT.J8.T42")
+    det = BridgeCardDetector('img/test/7.jpeg')
+
     print(det.preview())
-    print(det.to_pbn())
+
+    annotated_output = 'img/test/7_annotated.jpg'
+    det.visualize(annotated_output, debug=True)
+    print(f"Размеченное изображение сохранено в {annotated_output}")
+
+    img = cv2.imread(annotated_output)
+    if img is None:
+        print("Не удалось открыть сохранённое изображение.")
+    else:
+        cv2.imshow("Annotated Result", img)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()

@@ -35,7 +35,7 @@ req = HTTPXRequest(connection_pool_size=10, connect_timeout=10.0, read_timeout=6
 
 
 # === ОГРАНИЧЕНИЯ ================================================================
-CONTEXT_TTL_MIN = 7
+CONTEXT_TTL_MIN = 5
 
 PHOTO_LIMIT_COUNT = 1
 PHOTO_LIMIT_INTERVAL_MIN = 20
@@ -462,7 +462,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(get_help_text(), parse_mode=ParseMode.MARKDOWN)
     await _show_active_window(update, context)
 
-
+@with_expire
 @require_auth
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for key in (
