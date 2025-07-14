@@ -35,10 +35,12 @@ req = HTTPXRequest(connection_pool_size=10, connect_timeout=10.0, read_timeout=6
 
 
 # === ОГРАНИЧЕНИЯ ================================================================
+CONTEXT_TTL_MIN = 7
+
 PHOTO_LIMIT_COUNT = 1
-PHOTO_LIMIT_INTERVAL_MIN = 30
-PBN_LIMIT_COUNT = 2
-PBN_LIMIT_INTERVAL_MIN = 30
+PHOTO_LIMIT_INTERVAL_MIN = 20
+PBN_LIMIT_COUNT = 1
+PBN_LIMIT_INTERVAL_MIN = 20
 CACHED_PHOTO_DATABASE_NAME = "photo_requests.json"
 CACHED_PBN_DATABASE_NAME = "pbn_requests.json"
 
@@ -59,6 +61,34 @@ STATE_CONTRACT_CHOOSE_FIRST = "contract_choose_first"
 
 SUITS = ("S", "H", "D", "C")
 RANKS = ("A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2")
+
+# === ОГРАНИЧЕНИЕ ВРЕМЕНИ ЖИЗНИ КОНТЕКСТА ======================================
+
+def _touch(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обновляем отметку последнего действия пользователя."""
+    context.user_data['last_access'] = datetime.datetime.now()
+
+
+def _expire_if_needed(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Удаляем расклад/детектор и прочий state, если истёк TTL."""
+    last: datetime.datetime | None = context.user_data.get('last_access')
+    if last and (datetime.datetime.now() - last
+                 > datetime.timedelta(minutes=CONTEXT_TTL_MIN)):
+        for key in ('logic', 'detector', 'state', 'active_msg_id',
+                    'show_funcs', 'highlight_moves', 'contract_set',
+                    'chosen_denom', 'pending_card', 'pending_hand_src'):
+            context.user_data.pop(key, None)
+
+
+def with_expire(handler):
+    @wraps(handler)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        _expire_if_needed(context)
+        result = await handler(update, context)
+        _touch(context)
+        return result
+    return wrapper
+
 
 def chunk(seq, size=7):
     """Разбивает последовательность на куски не больше size элементов."""
@@ -102,6 +132,11 @@ def ignore_telegram_edit_errors(func):
 
 
 async def _show_active_window(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not (context.user_data.get("logic") or
+            context.user_data.get("detector") or
+            context.user_data.get("state")):
+        return
+
     chat_id = update.effective_chat.id
 
     logic: BridgeLogic | None = context.user_data.get("logic")
@@ -148,7 +183,7 @@ async def _show_active_window(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Я понимаю только команды.\n"
+        "⚠️ Я понимаю только команды.\n"
         "Пожалуйста, общайся со мной на языке команд."
     )
     await _show_active_window(update, context)
@@ -349,13 +384,17 @@ def analyze_result_markup() -> InlineKeyboardMarkup:
 # === СОЗДАТЬ / ОБНОВИТЬ BridgeLogic ДЛЯ ПОЛЬЗОВАТЕЛЯ ===========================
 
 def set_logic_from_pbn(context: ContextTypes.DEFAULT_TYPE, pbn: str) -> BridgeLogic:
-    """Создаём новый BridgeLogic(PBN) и кладём в user_data.
-
-    Если PBN некорректен, пробрасываем ValueError наружу, чтобы вызвать
-    красивое сообщение об ошибке.
     """
-    logic = BridgeLogic(pbn)  # может выбросить ValueError
+    Создаёт новый BridgeLogic(PBN), кладёт в user_data и
+    гарантированно обнуляет «визуальные» флаги (подсветка, функции и т. д.).
+    """
+    logic = BridgeLogic(pbn)
+
     context.user_data["logic"] = logic
+
+    context.user_data["highlight_moves"] = False
+    context.user_data["show_funcs"] = False
+
     return logic
 
 
@@ -426,15 +465,24 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @require_auth
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.pop("state", None)
+    for key in (
+        "logic", "detector", "state", "active_msg_id",
+        "show_funcs", "highlight_moves", "contract_set",
+        "chosen_denom", "pending_card", "pending_hand_src"
+    ):
+        context.user_data.pop(key, None)
+
     sent = await update.message.reply_text(
-        "Привет! Я Бриджит — кроссплатформенный ультимативный анализатор бриджевых сдач. "
+        "Привет! Я Бриджит — кроссплатформенный ультимативный анализатор бриджевых сдач.\n"
+        "Я нахожусь на стадии закрытого бета-тестирования до 23 июля. "
+        "О любых неполадках/неточностях/пожеланиях пишите создателю (аккаунт в описании).\n\n"
         "Чем займёмся на этот раз?",
         reply_markup=main_menu_markup(),
     )
     context.user_data["active_msg_id"] = sent.message_id
 
 
+@with_expire
 @require_auth
 async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
@@ -505,6 +553,7 @@ async def russian_precisedelta(delta: datetime.timedelta):
 
 # === CALLBACK‑КНОПКИ ===========================================================
 
+@with_expire
 @require_fresh_window
 @ignore_telegram_edit_errors
 async def goto_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -597,7 +646,7 @@ async def goto_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.answer("Отменено")
 
-
+@with_expire
 @require_fresh_window
 @ignore_telegram_edit_errors
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -636,8 +685,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-
-
+@with_expire
 @require_fresh_window
 @ignore_telegram_edit_errors
 async def analyze_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -710,7 +758,7 @@ async def analyze_result_handler(update: Update, context: ContextTypes.DEFAULT_T
         except Exception as e:
             await query.message.reply_text(f"Ошибка: {e}")
 
-
+@with_expire
 @require_fresh_window
 @ignore_telegram_edit_errors
 async def add_move_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -832,7 +880,7 @@ async def add_move_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
             await query.answer(f"Ошибка: {e}", show_alert=True)
         return
 
-
+@with_expire
 @require_fresh_window
 @ignore_telegram_edit_errors
 async def play_card_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -857,7 +905,7 @@ async def play_card_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = make_board_keyboard(logic, False, context.user_data.get("highlight_moves", False))
     await query.edit_message_text(board_view, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
-
+@with_expire
 @require_fresh_window
 @ignore_telegram_edit_errors
 async def analysis_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -920,6 +968,8 @@ async def analysis_action_handler(update: Update, context: ContextTypes.DEFAULT_
 
 
 # === Flow выбора контракта ================================================
+
+@with_expire
 @require_fresh_window
 @ignore_telegram_edit_errors
 async def contract_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -982,12 +1032,11 @@ async def handle_pbn_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Ошибка анализа: {e}")
 
-
 # === ОБРАБОТКА ФОТО ============================================================
 
 async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("state") != STATE_AWAIT_PHOTO:
-        await update.message.reply_text("Я понимаю только команды.\nПожалуйста, общайся со мной на языке команд.")
+        await update.message.reply_text("⚠️ Для отправки фотографий выберите соответствующую функцию в меню.")
         await _show_active_window(update, context)
         return
     msg = update.message
