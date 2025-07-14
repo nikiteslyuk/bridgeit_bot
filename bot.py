@@ -37,9 +37,9 @@ req = HTTPXRequest(connection_pool_size=10, connect_timeout=10.0, read_timeout=6
 # === ОГРАНИЧЕНИЯ ================================================================
 CONTEXT_TTL_MIN = 5
 
-PHOTO_LIMIT_COUNT = 1
+PHOTO_LIMIT_COUNT = 20 # 1
 PHOTO_LIMIT_INTERVAL_MIN = 20
-PBN_LIMIT_COUNT = 1
+PBN_LIMIT_COUNT = 20 # 1
 PBN_LIMIT_INTERVAL_MIN = 20
 CACHED_PHOTO_DATABASE_NAME = "photo_requests.json"
 CACHED_PBN_DATABASE_NAME = "pbn_requests.json"
