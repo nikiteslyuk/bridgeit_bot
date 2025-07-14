@@ -28,7 +28,7 @@ os.makedirs("img", exist_ok=True)
 
 # TOKEN = os.getenv("TG_TOKEN")
 TOKEN = "7976805123:AAHpYOm43hazvkXUlDY-q4X9US18upq9uak"
-AUTHORIZED_ID = [375025446, 855302541, 5458141225]
+AUTHORIZED_ID = [375025446, 924088517, 993660527, 843051911, 711780135]
 UNLIMITED_ID = [375025446, 855302541]
 logging.basicConfig(level=logging.INFO)
 req = HTTPXRequest(connection_pool_size=10, connect_timeout=10.0, read_timeout=60.0, write_timeout=60.0, pool_timeout=10.0)
@@ -190,13 +190,31 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def require_fresh_window(handler):
-    """Декоратор: если это неактуальное окно — показываем сообщение и молча выходим."""
+    """
+    Если нажали кнопку из «протухшего» или устаревшего окна,
+    выводим соответствующее предупреждение и ничего не делаем.
+    """
     @wraps(handler)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         last_id = context.user_data.get("active_msg_id")
 
-        if last_id is None or query.message.message_id != last_id:
+        if last_id is None:
+            try:
+                await query.edit_message_text(
+                    "⚠️ Сессия истекла по тайм-ауту.\n"
+                    "Нажмите /start, чтобы начать заново.",
+                    reply_markup=None,
+                )
+            except BadRequest:
+                pass
+            try:
+                await query.answer()
+            except BadRequest:
+                pass
+            return
+
+        if query.message.message_id != last_id:
             try:
                 await query.edit_message_text(
                     "⚠️ Это неактуальное окно.\n"
@@ -209,10 +227,10 @@ def require_fresh_window(handler):
                 await query.answer()
             except BadRequest:
                 pass
-
             return
 
         return await handler(update, context)
+
     return wrapper
 
 
