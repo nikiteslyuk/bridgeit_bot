@@ -209,6 +209,8 @@ class BridgeCardDetector:
             if self._norm_card(raw) == card:
                 self._dets[i] = (x1, y1, x2, y2, raw, dest)
 
+        self._auto_fill_trivial()
+
     def remove(self, spec: str):
         card_tok, hand_tok = spec.strip().split()
         card = self._norm_card(card_tok)
