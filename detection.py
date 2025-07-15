@@ -13,7 +13,7 @@ from ultralytics import YOLO, __version__ as ULTRA_VER
 from sklearn.mixture import GaussianMixture
 
 # ──────────── константы ────────────
-MAX_HAND_LEN = 13 
+MAX_HAND_LEN = 13
 RANKS = "AKQJT98765432"
 SUITS = "SHDC"
 ALL_CARDS: Set[str] = {r + s for s in SUITS for r in RANKS}
@@ -86,7 +86,7 @@ class BridgeCardDetector:
         """
         Если пропущенные карты *обязательно* принадлежат единственной
         недоукомплектованной руке, добавляет их туда автоматически и
-        возвращает сообщение вида  
+        возвращает сообщение вида
 
             «Тривиально определилось положение потерянных 3 карт → N: 10♠ A♦ …»
 
@@ -146,17 +146,16 @@ class BridgeCardDetector:
 
     def visualize(self, save: str, *, debug: bool = False):
         """
-        Сохранить изображение с разметкой карт.
+        Сохранить изображение с разметкой распознанных карт.
 
         Parameters
         ----------
         save : str
-            Путь, куда сохранить картинку.
+            Путь, куда сохранить получившийся файл.
         debug : bool, default = False
-            • False — классическая разметка (цвет по рукам, подпись – буква руки).
-            • True  — отладочная: цвет по *масти*, надпись «карта  уверенность».
-              Подписи автоматически «расходятся» по вертикали, чтобы не налегать
-              друг на друга.
+            • False — классическая разметка: цвет по рукам, подпись — буква руки.
+            • True  — отладочная: цвет по масти, подпись «карта  уверенность».
+              Подписи автоматически разводятся по вертикали, чтобы не накладываться.
         """
         if not save:
             raise ValueError("Путь для сохранения изображения должен быть задан.")
@@ -165,27 +164,27 @@ class BridgeCardDetector:
         if img is None:
             raise FileNotFoundError(f"Не удалось открыть изображение: {self.img_path}")
 
-        # ---------- цветовая схема ------------------------------------------
-        if debug:
-            suit_colors = {
-                "S": (255,  50,  50),
-                "H": ( 50,  50, 255),
-                "D": (  0, 165, 255),
-                "C": ( 50, 255,  50),
-            }
-            get_color = lambda raw, *_: suit_colors[self._norm_card(raw)[1]]
-        else:
-            player_colors = {"N": (255,   0,   0),
-                             "S": (  0, 255,   0),
-                             "E": (  0,   0, 255),
-                             "W": (  0, 255, 255)}
-            get_color = lambda *_args: player_colors[_args[-1]]
+        # --- цветовые схемы -------------------------------------------------
+        suit_colors = {
+            "S": (200, 70, 70),
+            "H": (70, 70, 200),
+            "D": (0, 140, 200),
+            "C": (70, 200, 70),
+        }
+        player_colors = {
+            "S": (200, 70, 70),
+            "E": (70, 70, 200),
+            "W": (0, 140, 200),
+            "N": (70, 200, 70),
+        }
 
-        # ----------- помощник для разведения подписей -----------------------
-        occupied: list[Tuple[int, int, int, int]] = []  # x, y, w, h ранее размещённого текста
+        def get_color(raw_lbl: str, player: str):
+            return suit_colors[self._norm_card(raw_lbl)[1]] if debug else player_colors[player]
+
+        # --- помощник, чтобы подписи не налегали друг на друга --------------
+        occupied: list[tuple[int, int, int, int]] = []
 
         def place_text(box, txt_size):
-            """Вернуть смещение dy так, чтобы текст не перекрывал уже занятые z-оны."""
             x1, y1, _, _ = box
             w, h = txt_size
             dy = 0
@@ -197,30 +196,43 @@ class BridgeCardDetector:
             occupied.append((x1, y1 - dy, w, h))
             return dy
 
-        # ----------- наносим рамки и подписи --------------------------------
+        # --- наносим рамки и подписи ----------------------------------------
         for det in self._dets:
-            x1, y1, x2, y2, raw, pl, *rest = det
-            conf = rest[0] if rest else 0.0
+            if len(det) == 7:
+                x1, y1, x2, y2, raw, pl, conf = det
+            else:
+                x1, y1, x2, y2, raw, pl = det
+                conf = 0.0
 
             color = get_color(raw, pl)
             cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
 
             if debug:
                 label = self._norm_card(raw)
-                text  = f"{label} {conf:.2f}"
+                text = f"{label} {conf:.2f}"
             else:
-                text  = pl
+                text = pl
 
             (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
             offset = place_text((x1, y1, x2, y2), (tw, th))
 
-            cv2.rectangle(img,
-                          (x1, y1 - th - 6 - offset),
-                          (x1 + tw + 4, y1 - offset),
-                          color, -1)
-            cv2.putText(img, text, (x1 + 2, y1 - 4 - offset),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55,
-                        (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.rectangle(
+                img,
+                (x1, y1 - th - 6 - offset),
+                (x1 + tw + 4, y1 - offset),
+                color,
+                -1,
+            )
+            cv2.putText(
+                img,
+                text,
+                (x1 + 2, y1 - 4 - offset),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
 
         cv2.imwrite(save, img)
 
@@ -229,6 +241,10 @@ class BridgeCardDetector:
 
     # ---------- add / move / remove ----------
     def add(self, spec: str):
+        """
+        «<карта> <рука>» — добавить карту в указанную руку.
+        Напр.  'QH E'  (валет червей к востоку).
+        """
         card_tok, hand_tok = spec.strip().split()
         card = self._norm_card(card_tok)
         hand = self._norm_player(hand_tok)
@@ -236,18 +252,26 @@ class BridgeCardDetector:
         for p in ORDER:
             if card in self.hands[p] and p != hand:
                 raise ValueError(f"{_card_unicode(card)} уже у {p}")
+
         self.hands[hand].add(card)
 
-        for i, (_, _, _, _, raw, pl) in enumerate(self._dets):
-            if self._norm_card(raw) == card and pl != hand:
-                self._dets[i] = (*self._dets[i][:5], hand)
+        for i, det in enumerate(self._dets):
+            raw = det[4]
+            if self._norm_card(raw) == card and det[5] != hand:
+                conf = det[6] if len(det) == 7 else 0.0
+                self._dets[i] = (*det[:5], hand, conf)
 
         self._auto_fill_trivial()
 
     def move(self, spec: str):
+        """
+        «<карта> <куда>» — перекинуть карту из текущей руки в другую.
+        Например  'AS N'  — туз пик к северу.
+        """
         card_tok, dest_hand = spec.strip().split()
         card = self._norm_card(card_tok)
         dest = self._norm_player(dest_hand)
+
         src = next((p for p in ORDER if card in self.hands[p]), None)
         if src is None:
             raise ValueError(f"{_card_unicode(card)} не найдена")
@@ -256,30 +280,48 @@ class BridgeCardDetector:
         if card in self.hands[dest]:
             raise ValueError(f"{_card_unicode(card)} уже у {dest}")
 
+        # переносим
         self.hands[src].remove(card)
         self.hands[dest].add(card)
 
-        for i, (x1, y1, x2, y2, raw, pl) in enumerate(self._dets):
-            if self._norm_card(raw) == card:
-                self._dets[i] = (x1, y1, x2, y2, raw, dest)
+        # правим _dets
+        for i, det in enumerate(self._dets):
+            if self._norm_card(det[4]) == card:
+                conf = det[6] if len(det) == 7 else 0.0
+                self._dets[i] = (*det[:5], dest, conf)
 
         self._auto_fill_trivial()
 
-    def remove(self, spec: str):
-        card_tok, hand_tok = spec.strip().split()
-        card = self._norm_card(card_tok)
-        hand = self._norm_player(hand_tok)
+    # ---------- вращение стола ----------
+    def clockwise(self):
+        """
+        Сдвиг по часовой стрелке:  N→E, E→S, S→W, W→N
+        """
+        old_hands = {p: set(self.hands[p]) for p in ORDER}
+        for i, p in enumerate(ORDER):
+            self.hands[ORDER[(i + 1) % 4]] = old_hands[p]
 
-        if card not in self.hands[hand]:
-            raise ValueError(f"{_card_unicode(card)} нет у {hand}")
-        self.hands[hand].remove(card)
+        def shift(pl): return ORDER[(ORDER.index(pl) + 1) % 4]
+        self._dets = [
+            (*det[:5], shift(det[5]), det[6] if len(det) == 7 else 0.0)
+            for det in self._dets
+        ]
 
-        # чистим кэш детекций
-        self._dets = [d for d in self._dets if not (
-            self._norm_card(d[4]) == card and d[5] == hand)]
+    def uclockwise(self):
+        """
+        Сдвиг против часовой:  N→W, W→S, S→E, E→N
+        """
+        old_hands = {p: set(self.hands[p]) for p in ORDER}
+        for i, p in enumerate(ORDER):
+            self.hands[ORDER[(i - 1) % 4]] = old_hands[p]
+
+        def shift(pl): return ORDER[(ORDER.index(pl) - 1) % 4]
+        self._dets = [
+            (*det[:5], shift(det[5]), det[6] if len(det) == 7 else 0.0)
+            for det in self._dets
+        ]
 
     # ---------- прочее ----------
-
     def to_pbn(self, dealer: str | None = None) -> str:
         """
         Вернуть строку PBN с правильным порядком в зависимости от сдающего.
@@ -349,6 +391,8 @@ class BridgeCardDetector:
             west, east = sorted(rest, key=lambda i: centroids[i][0])
 
         cluster2p = {north: "N", south: "S", west: "W", east: "E"}
+        self._cluster2p = cluster2p
+        self._cluster_centroids = centroids
         pl2cluster = {v: k for k, v in cluster2p.items()}
 
         # --- первая запись карт ---
@@ -363,63 +407,99 @@ class BridgeCardDetector:
                 self.hands[prev].discard(label)
             self.hands[player].add(label)
             best[label] = (conf, player)
-            self._dets.append((x1, y1, x2, y2, raw, player))
+            self._dets.append((x1, y1, x2, y2, raw, player, conf))
 
         # =========================================================
         #        П О В Т О Р Н А Я   П Р О В Е Р К А
         # =========================================================
         DIST_THRESH = 90.0
-
-        for idx, (x1, y1, x2, y2, raw, pl) in enumerate(self._dets):
-            cx = (x1 + x2) / 2
-            cy = (y1 + y2) / 2
-            dists = np.linalg.norm(centroids - np.array([cx, cy]), axis=1)
+        for idx, det in enumerate(self._dets):
+            x1, y1, x2, y2, raw, pl, *_ = det
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+            dists  = np.linalg.norm(centroids - np.array([cx, cy]), axis=1)
             nearest = int(np.argmin(dists))
-            nearest_player = cluster2p[nearest]
-            current_cluster = pl2cluster[pl]
-            # разница дистанций
-            if nearest != current_cluster and dists[current_cluster] - dists[nearest] > DIST_THRESH:
-                label = self._norm_card(raw)
-                # перенос
-                self.hands[pl].discard(label)
-                self.hands[nearest_player].add(label)
-                self._dets[idx] = (x1, y1, x2, y2, raw, nearest_player)
+            if nearest != pl2cluster[pl] and dists[pl2cluster[pl]] - dists[nearest] > DIST_THRESH:
+                # перенос карты к правильной руке
+                self.hands[pl].discard(self._norm_card(raw))
+                new_pl = cluster2p[nearest]
+                self.hands[new_pl].add(self._norm_card(raw))
+                self._dets[idx] = (x1, y1, x2, y2, raw, new_pl, det[6])
 
-    def clockwise(self):
-        """
-        Сдвигает все руки по часовой стрелке:
-        N → E, E → S, S → W, W → N
-        """
-        # Сдвигаем руки
-        old_hands = {p: set(self.hands[p]) for p in ORDER}
-        for i, p in enumerate(ORDER):
-            next_p = ORDER[(i + 1) % 4]
-            self.hands[next_p] = old_hands[p]
-        # Обновляем _dets
-        def shift_player(pl):
-            idx = ORDER.index(pl)
-            return ORDER[(idx + 1) % 4]
-        self._dets = [
-            (*det[:5], shift_player(det[5]))
-            for det in self._dets
-        ]
+        # ---------- пост-обработка ----------
+        self._filter_by_geometry(img)   # убираем боксы «не по форме»
+        self._second_pass_low_conf(img) # докидываем недостающие карты
 
-    def uclockwise(self):
+    def _second_pass_low_conf(self, img: np.ndarray):
         """
-        Сдвигает все руки против часовой стрелки:
-        N → W, W → S, S → E, E → N
+        Второй проход (conf=0.20).
+        Переносим карту в другую руку ТОЛЬКО если
+            • новый bbox ближе к центру своего кластера, чем старый – и
+            • новый conf не существенно хуже старого (≥ old_conf-0.05).
         """
-        old_hands = {p: set(self.hands[p]) for p in ORDER}
-        for i, p in enumerate(ORDER):
-            prev_p = ORDER[(i - 1) % 4]
-            self.hands[prev_p] = old_hands[p]
-        def shift_player(pl):
-            idx = ORDER.index(pl)
-            return ORDER[(idx - 1) % 4]
-        self._dets = [
-            (*det[:5], shift_player(det[5]))
-            for det in self._dets
-        ]
+        pred2 = self.model.predict(img, imgsz=1600, augment=True,
+                                   conf=0.20, verbose=False)[0]
+
+        id2label = self.model.names
+
+        card2idx = {self._norm_card(d[4]): i for i, d in enumerate(self._dets)}
+
+        for b in pred2.boxes:
+            raw   = id2label[int(b.cls)]
+            card  = self._norm_card(raw)
+            x1, y1, x2, y2 = map(int, b.xyxy[0])
+            conf_new = float(b.conf.cpu().item())
+            cx, cy   = (x1 + x2)/2, (y1 + y2)/2
+
+            dists   = np.linalg.norm(self._cluster_centroids - np.array([cx, cy]), axis=1)
+            cl_new  = int(np.argmin(dists))
+            pl_new  = self._cluster2p[cl_new]
+            dist_new = dists[cl_new]
+
+            if card not in card2idx:
+                self._dets.append((x1, y1, x2, y2, raw, pl_new, conf_new))
+                self.hands[pl_new].add(card)
+                card2idx[card] = len(self._dets) - 1
+                continue
+
+            idx_old  = card2idx[card]
+            x1o, y1o, x2o, y2o, raw_old, pl_old, conf_old = self._dets[idx_old]
+            cx_old, cy_old = (x1o + x2o)/2, (y1o + y2o)/2
+            dist_old = np.linalg.norm(self._cluster_centroids[cl_new] -
+                                      np.array([cx_old, cy_old]))
+
+            if (pl_old != pl_new and
+                dist_new < dist_old and
+                conf_new >= conf_old - 0.05):
+
+                if card in self.hands[pl_old]:
+                    self.hands[pl_old].remove(card)
+                self.hands[pl_new].add(card)
+                self._dets[idx_old] = (x1, y1, x2, y2, raw, pl_new, conf_new)
+
+            elif pl_old == pl_new and conf_new > conf_old:
+                self._dets[idx_old] = (x1, y1, x2, y2, raw, pl_new, conf_new)
+
+    def _filter_by_geometry(self, img: np.ndarray):
+        """
+        Отбрасываем детекции, у которых bbox не похоже
+        на стандартную карту (аспр. вне [0.5..0.8]
+        или слишком мала/велика площадь).
+        """
+        h_img, w_img = img.shape[:2]
+        new_dets = []
+        for det in self._dets:
+            x1, y1, x2, y2 = det[0], det[1], det[2], det[3]
+            w, h = x2 - x1, y2 - y1
+            ar = w / h if h>0 else 0
+            area = w * h
+            if 0.5 < ar < 0.8 and 0.01*w_img*w_img < area < 0.1*w_img*w_img:
+                new_dets.append(det)
+        self._dets = new_dets
+
+        self.hands = {p:set() for p in ORDER}
+        for det in self._dets:
+            card = self._norm_card(det[4])
+            self.hands[det[5]].add(card)
 
     # ---- helpers ----
     @staticmethod
@@ -497,18 +577,10 @@ class BridgeCardDetector:
 # ──────────── демо ────────────
 if __name__ == "__main__":
     # det = BridgeCardDetector.from_pbn("T652.7652.Q6.AKJ 3.3.T97532.Q9853 Q4.AKQ984.AK4.76 AKJ987.JT.J8.T42")
-    det = BridgeCardDetector('img/test/7.jpeg')
+    det = BridgeCardDetector('img/test/4.jpg')
 
     print(det.preview())
 
     annotated_output = 'img/test/7_annotated.jpg'
     det.visualize(annotated_output, debug=True)
     print(f"Размеченное изображение сохранено в {annotated_output}")
-
-    img = cv2.imread(annotated_output)
-    if img is None:
-        print("Не удалось открыть сохранённое изображение.")
-    else:
-        cv2.imshow("Annotated Result", img)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
