@@ -336,17 +336,41 @@ def card_keyboard(cards: list[str]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def hand_keyboard(prompt_back: str = "⬅️ Назад", back_data: str = "cancel_add_move") -> InlineKeyboardMarkup:
+def hand_keyboard(detector: BridgeCardDetector | None = None, adjust: dict[str, int] | None = None, prompt_back: str = "⬅️ Назад", back_data: str = "cancel_add_move") -> InlineKeyboardMarkup:
+    """
+    Клавиатура выбора руки (N/E/S/W).
+
+    Parameters
+    ----------
+    detector : BridgeCardDetector | None
+        Если передан – берём реальные размеры рук.
+    adjust : dict[str,int] | None
+        Словарь вида {"N": -1, "S": +1} – временно
+        корректирует количество карт при отображении.
+        Полезно, когда карта уже вынута из одной руки,
+        но ещё не положена в другую.
+    """
+    names  = {"N": "North", "E": "East", "S": "South", "W": "West"}
+    arrows = {"N": "⬆️",   "E": "➡️",   "S": "⬇️",   "W": "⬅️"}
+
+    adjust = adjust or {}
+
+    def lbl(code: str) -> str:
+        if detector:
+            cnt = len(detector.hand_cards(code)) + adjust.get(code, 0)
+            return f"{arrows[code]} {names[code]} ({cnt}/13)"
+        return f"{arrows[code]} {names[code]}"
+
     rows = [
         [
-            InlineKeyboardButton("⬆️ North",  callback_data="hand_N"),
-            InlineKeyboardButton("➡️ East",   callback_data="hand_E"),
+            InlineKeyboardButton(lbl("N"), callback_data="hand_N"),
+            InlineKeyboardButton(lbl("E"), callback_data="hand_E"),
         ],
         [
-            InlineKeyboardButton("⬅️ West",   callback_data="hand_W"),
-            InlineKeyboardButton("⬇️ South",  callback_data="hand_S"),
+            InlineKeyboardButton(lbl("W"), callback_data="hand_W"),
+            InlineKeyboardButton(lbl("S"), callback_data="hand_S"),
         ],
-        [InlineKeyboardButton(prompt_back, callback_data=back_data)]
+        [InlineKeyboardButton(prompt_back, callback_data=back_data)],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -781,18 +805,14 @@ async def analyze_result_handler(update: Update, context: ContextTypes.DEFAULT_T
 @ignore_telegram_edit_errors
 async def add_move_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    data  = query.data
+    data = query.data
     detector: BridgeCardDetector | None = context.user_data.get("detector")
 
-    # --- если расклад уже принят -------------------------------------------
     if detector is None:
-        await query.answer(
-            "Расклад уже принят.\nРедактирование недоступно.",
-            show_alert=True
-        )
+        await query.answer("Расклад уже принят.\nРедактирование недоступно.", show_alert=True)
         return
 
-    # --- отмена операции -----------------------------------------------------
+    # ---------- отмена любого шага ----------
     if data == "cancel_add_move":
         for k in ("state", "pending_card", "pending_hand_src"):
             context.user_data.pop(k, None)
@@ -805,7 +825,7 @@ async def add_move_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer("Операция отменена")
         return
 
-    # --- начало «добавить карту» --------------------------------------------
+    # ---------- старт: «добавить карту» ----------
     if data == "add_card_start":
         lost = detector.lost_cards()
         if not lost:
@@ -818,31 +838,32 @@ async def add_move_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
-    # --- начало «переместить карту» -----------------------------------------
+    # ---------- старт: «переместить карту» ----------
     if data == "move_card_start":
         context.user_data["state"] = STATE_MOVE_CARD_SELECT_HAND
         await query.edit_message_text(
             "Из какой руки переместить карту?",
-            reply_markup=hand_keyboard(),
+            reply_markup=hand_keyboard(detector),
         )
         return
 
-    # -----------------------------------------------------------------------
+    # ---------- текущее состояние ----------
     state = context.user_data.get("state")
 
-    # === ADD-CARD: выбрана карта ============================================
+    # === ADD-CARD: выбрана карта ===
     if state == STATE_ADD_CARD_SELECT_CARD and data.startswith("sel_card_"):
-        context.user_data["pending_card"] = data.replace("sel_card_", "")
+        card = data.replace("sel_card_", "")
+        context.user_data["pending_card"] = card
         context.user_data["state"] = STATE_ADD_CARD_SELECT_HAND
         await query.edit_message_text(
-            f"Куда положить {context.user_data['pending_card']}?",
-            reply_markup=hand_keyboard(),
+            f"Куда положить {_pretty(card)}?",
+            reply_markup=hand_keyboard(detector),
         )
         return
 
-    # === ADD-CARD: выбрана рука (конец) =====================================
+    # === ADD-CARD: выбрана рука (конец) ===
     if state == STATE_ADD_CARD_SELECT_HAND and data.startswith("hand_"):
-        hand = data[-1]                      # N/E/S/W
+        hand = data[-1]  # N/E/S/W
         card = context.user_data.pop("pending_card")
         context.user_data.pop("state", None)
         try:
@@ -856,10 +877,10 @@ async def add_move_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
             await query.answer(f"Ошибка: {e}", show_alert=True)
         return
 
-    # === MOVE-CARD: выбрана исходная рука ===================================
+    # === MOVE-CARD: выбрана исходная рука ===
     if state == STATE_MOVE_CARD_SELECT_HAND and data.startswith("hand_"):
         hand_src = data[-1]
-        cards_in_hand = detector.hand_cards(hand_src)   # список карт в руке
+        cards_in_hand = detector.hand_cards(hand_src)
         if not cards_in_hand:
             await query.answer("В этой руке нет карт")
             return
@@ -873,15 +894,22 @@ async def add_move_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     # === MOVE-CARD: выбрана карта ===========================================
     if state == STATE_MOVE_CARD_SELECT_CARD and data.startswith("sel_card_"):
-        context.user_data["pending_card"] = data.replace("sel_card_", "")
+        card = data.replace("sel_card_", "")
+        hand_src = context.user_data.get("pending_hand_src")
+        context.user_data["pending_card"] = card
         context.user_data["state"] = STATE_MOVE_CARD_SELECT_DEST
+
         await query.edit_message_text(
-            "В какую руку переместить карту?",
-            reply_markup=hand_keyboard(),
+            f"В какую руку переместить {_pretty(card)}?",
+            reply_markup=hand_keyboard(
+                detector,
+                adjust={hand_src: -1} if hand_src else None
+            ),
         )
         return
 
-    # === MOVE-CARD: выбрана целевая рука (конец) ============================
+
+    # === MOVE-CARD: выбрана целевая рука (конец) ===
     if state == STATE_MOVE_CARD_SELECT_DEST and data.startswith("hand_"):
         hand_dst = data[-1]
         card     = context.user_data.pop("pending_card")
