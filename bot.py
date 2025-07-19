@@ -28,7 +28,7 @@ os.makedirs("img", exist_ok=True)
 
 # TOKEN = os.getenv("TG_TOKEN")
 TOKEN = "7976805123:AAHpYOm43hazvkXUlDY-q4X9US18upq9uak"
-AUTHORIZED_ID = [375025446, 924088517, 993660527, 843051911, 711780135]
+AUTHORIZED_ID = [375025446, 924088517, 993660527, 843051911, 711780135, 670676495]
 UNLIMITED_ID = [375025446, 855302541]
 logging.basicConfig(level=logging.INFO)
 req = HTTPXRequest(connection_pool_size=10, connect_timeout=10.0, read_timeout=60.0, write_timeout=60.0, pool_timeout=10.0)
