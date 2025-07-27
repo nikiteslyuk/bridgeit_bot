@@ -430,54 +430,58 @@ class BridgeCardDetector:
         self._second_pass_low_conf(img) # докидываем недостающие карты
 
     def _second_pass_low_conf(self, img: np.ndarray):
-        """
-        Второй проход (conf=0.20).
-        Переносим карту в другую руку ТОЛЬКО если
-            • новый bbox ближе к центру своего кластера, чем старый – и
-            • новый conf не существенно хуже старого (≥ old_conf-0.05).
-        """
         pred2 = self.model.predict(img, imgsz=1600, augment=True,
                                    conf=0.20, verbose=False)[0]
-
         id2label = self.model.names
 
-        card2idx = {self._norm_card(d[4]): i for i, d in enumerate(self._dets)}
+        def iou(a, b):
+            xA = max(a[0], b[0])
+            yA = max(a[1], b[1])
+            xB = min(a[2], b[2])
+            yB = min(a[3], b[3])
+            inter = max(0, xB - xA) * max(0, yB - yA)
+            if inter == 0:
+                return 0.0
+            area1 = (a[2] - a[0]) * (a[3] - a[1])
+            area2 = (b[2] - b[0]) * (b[3] - b[1])
+            return inter / (area1 + area2 - inter)
 
         for b in pred2.boxes:
-            raw   = id2label[int(b.cls)]
-            card  = self._norm_card(raw)
+            raw_new = id2label[int(b.cls)]
+            card_new = self._norm_card(raw_new)
             x1, y1, x2, y2 = map(int, b.xyxy[0])
             conf_new = float(b.conf.cpu().item())
-            cx, cy   = (x1 + x2)/2, (y1 + y2)/2
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+            dists = np.linalg.norm(self._cluster_centroids - np.array([cx, cy]), axis=1)
+            cl_new = int(np.argmin(dists))
+            pl_new = self._cluster2p[cl_new]
 
-            dists   = np.linalg.norm(self._cluster_centroids - np.array([cx, cy]), axis=1)
-            cl_new  = int(np.argmin(dists))
-            pl_new  = self._cluster2p[cl_new]
-            dist_new = dists[cl_new]
+            best_iou, idx_best = 0.0, None
+            for idx_old, det in enumerate(self._dets):
+                iou_val = iou((x1, y1, x2, y2), det[:4])
+                if iou_val > best_iou:
+                    best_iou, idx_best = iou_val, idx_old
 
-            if card not in card2idx:
-                self._dets.append((x1, y1, x2, y2, raw, pl_new, conf_new))
-                self.hands[pl_new].add(card)
-                card2idx[card] = len(self._dets) - 1
+            if best_iou > 0.5:
+                x1o, y1o, x2o, y2o, raw_old, pl_old, conf_old = self._dets[idx_best]
+                card_old = self._norm_card(raw_old)
+                if card_new == card_old:
+                    if conf_new > conf_old:
+                        self._dets[idx_best] = (x1, y1, x2, y2, raw_new, pl_old, conf_new)
+                else:
+                    if conf_new > conf_old + 0.2:
+                        for p in ORDER:
+                            self.hands[p].discard(card_old)
+                            self.hands[p].discard(card_new)
+                        self.hands[pl_new].add(card_new)
+                        self._dets[idx_best] = (x1, y1, x2, y2, raw_new, pl_new, conf_new)
                 continue
 
-            idx_old  = card2idx[card]
-            x1o, y1o, x2o, y2o, raw_old, pl_old, conf_old = self._dets[idx_old]
-            cx_old, cy_old = (x1o + x2o)/2, (y1o + y2o)/2
-            dist_old = np.linalg.norm(self._cluster_centroids[cl_new] -
-                                      np.array([cx_old, cy_old]))
+            if any(card_new in self.hands[p] for p in ORDER):
+                continue
 
-            if (pl_old != pl_new and
-                dist_new < dist_old and
-                conf_new >= conf_old - 0.05):
-
-                if card in self.hands[pl_old]:
-                    self.hands[pl_old].remove(card)
-                self.hands[pl_new].add(card)
-                self._dets[idx_old] = (x1, y1, x2, y2, raw, pl_new, conf_new)
-
-            elif pl_old == pl_new and conf_new > conf_old:
-                self._dets[idx_old] = (x1, y1, x2, y2, raw, pl_new, conf_new)
+            self._dets.append((x1, y1, x2, y2, raw_new, pl_new, conf_new))
+            self.hands[pl_new].add(card_new)
 
     def _filter_by_geometry(self, img: np.ndarray):
         """
@@ -577,7 +581,7 @@ class BridgeCardDetector:
 # ──────────── демо ────────────
 if __name__ == "__main__":
     # det = BridgeCardDetector.from_pbn("T652.7652.Q6.AKJ 3.3.T97532.Q9853 Q4.AKQ984.AK4.76 AKJ987.JT.J8.T42")
-    det = BridgeCardDetector('img/test/4.jpg')
+    det = BridgeCardDetector('img/test/7.jpeg')
 
     print(det.preview())
 

@@ -35,12 +35,12 @@ req = HTTPXRequest(connection_pool_size=10, connect_timeout=10.0, read_timeout=6
 
 
 # === ОГРАНИЧЕНИЯ ================================================================
-CONTEXT_TTL_MIN = 5
+CONTEXT_TTL_MIN = 6
 
-PHOTO_LIMIT_COUNT = 20 # 1
-PHOTO_LIMIT_INTERVAL_MIN = 20
-PBN_LIMIT_COUNT = 20 # 1
-PBN_LIMIT_INTERVAL_MIN = 20
+PHOTO_LIMIT_COUNT = 1
+PHOTO_LIMIT_INTERVAL_MIN = 15
+PBN_LIMIT_COUNT = 1
+PBN_LIMIT_INTERVAL_MIN = 15
 CACHED_PHOTO_DATABASE_NAME = "photo_requests.json"
 CACHED_PBN_DATABASE_NAME = "pbn_requests.json"
 
@@ -454,7 +454,7 @@ def get_help_text() -> str:
 
     1. 📷 По фото — выберите «Анализ по фото» и отправьте снимок расклада  
     • На фото действует лимит запросов и «кулдаун»  
-    • Номиналы карт должны быть хорошо видны 
+    • Номиналы и масти карт должны быть хорошо видны 
     • Если в трёх руках по 13 карт, а в четвёртой меньше, недостающие карты автоматически добавятся именно в эту руку
     2. 📄 По PBN — выберите «Анализ по PBN» и отправьте одну PBN-строку
     • Формат PBN: сторона света (буква): рука1 рука2 рука3 рука4  
@@ -499,13 +499,12 @@ def get_help_text() -> str:
     1. Чтобы начать новый расклад или вернуться в главное меню, нажмите /start"""
 
 
-@require_auth
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(get_help_text(), parse_mode=ParseMode.MARKDOWN)
     await _show_active_window(update, context)
 
+
 @with_expire
-@require_auth
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for key in (
         "logic", "detector", "state", "active_msg_id",
@@ -516,7 +515,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     sent = await update.message.reply_text(
         "Привет! Я Бриджит — кроссплатформенный ультимативный анализатор бриджевых сдач.\n"
-        "Я нахожусь на стадии закрытого бета-тестирования до 23 июля. "
         "О любых неполадках/неточностях/пожеланиях пишите создателю (аккаунт в описании).\n\n"
         "Чем займёмся на этот раз?",
         reply_markup=main_menu_markup(),
@@ -525,7 +523,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @with_expire
-@require_auth
 async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     uid = update.effective_user.id
@@ -1149,7 +1146,7 @@ def post_init(application: Application):
         BotCommand("start", "Запустить бота"),
         BotCommand("pbn", "PBN-строка текущего расклада"),
         BotCommand("help", "Показать документацию"),
-        BotCommand("id", "Узнать свой Telegram-ID"),
+        # BotCommand("id", "Узнать свой Telegram-ID"),
     ])
 
 
@@ -1162,7 +1159,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("pbn", cmd_pbn))
     app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("id", show_id))
+    # app.add_handler(CommandHandler("id", show_id))
 
     # Кнопки меню и навигации
     app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(menu_docs|input_pbn|input_photo|back_main)$"))
