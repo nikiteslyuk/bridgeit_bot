@@ -1090,7 +1090,7 @@ async def contract_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
         token = data.split("_", 1)[1]
         context.user_data["chosen_denom"] = token
         context.user_data["state"] = STATE_CONTRACT_CHOOSE_FIRST
-        await query.edit_message_text("Выберите кто делает *первый ход*:", reply_markup=contract_first_keyboard())
+        await query.edit_message_text("Выберите кто делает *первый ход*:", parse_mode=ParseMode.MARKDOWN, reply_markup=contract_first_keyboard())
         return
     if data.startswith("first_"):
         first = data.split("_", 1)[1]
