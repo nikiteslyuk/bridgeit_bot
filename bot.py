@@ -511,11 +511,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "chosen_denom", "pending_card", "pending_hand_src"
     ):
         context.user_data.pop(key, None)
-
     sent = await update.message.reply_text(
-        "Привет! Я Бриджит — кроссплатформенный ультимативный анализатор бриджевых сдач.\n\n"
-        "Я могу анализировать не только полные расклады, но и концовки сдач, в которых остается менее 13-и карт в каждой руке\n\n"
-        "О любых неполадках/неточностях/пожеланиях пишите создателю (аккаунт в описании).\n\n"
         "Чем займёмся на этот раз?",
         reply_markup=main_menu_markup(),
     )
@@ -726,6 +722,7 @@ async def goto_flow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.answer("Отменено")
 
+
 @with_expire
 @require_fresh_window
 @ignore_telegram_edit_errors
@@ -787,6 +784,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Выберите действие:",
             reply_markup=main_menu_markup(),
         )
+
 
 @with_expire
 @require_fresh_window
@@ -860,6 +858,7 @@ async def analyze_result_handler(update: Update, context: ContextTypes.DEFAULT_T
             await query.answer(str(e), show_alert=True)
         except Exception as e:
             await query.message.reply_text(f"Ошибка: {e}")
+
 
 @with_expire
 @require_fresh_window
@@ -987,6 +986,7 @@ async def add_move_flow_handler(update: Update, context: ContextTypes.DEFAULT_TY
             await query.answer(f"Ошибка: {e}", show_alert=True)
         return
 
+
 @with_expire
 @require_fresh_window
 @ignore_telegram_edit_errors
@@ -1011,6 +1011,7 @@ async def play_card_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     board_view = _pre(logic.display())
     kb = make_board_keyboard(logic, False, context.user_data.get("highlight_moves", False))
     await query.edit_message_text(board_view, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
 
 @with_expire
 @require_fresh_window
@@ -1072,7 +1073,6 @@ async def analysis_action_handler(update: Update, context: ContextTypes.DEFAULT_
             board_view = _pre(logic.display())
             kb = make_board_keyboard(logic, context.user_data.get("show_funcs", False), context.user_data.get("highlight_moves", False))
             await context.bot.edit_message_text(chat_id=query.message.chat_id, message_id=main_msg_id, text=board_view, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
-
 
 # === Flow выбора контракта ================================================
 
@@ -1177,7 +1177,6 @@ async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         database[chat_id] = [t.isoformat() for t in recent]
         with open(CACHED_PHOTO_DATABASE_NAME, "w") as jf:
             json.dump(database, jf)
-
     inp = generate_filename()
     out = generate_filename()
     path = await file.download_to_drive(inp)
@@ -1194,13 +1193,12 @@ async def handle_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         await msg.reply_text(f"Ошибка распознавания: {e}")
     finally:
-        for fn in (inp, out):
+        for fn in {inp, out, path}:
             try:
                 os.remove(fn)
-            except OSError:
+            except FileNotFoundError:
                 pass
         context.user_data.pop("state", None)
-
 
 # === ГЛАВНАЯ ФУНКЦИЯ ===========================================================
 
