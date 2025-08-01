@@ -1,0 +1,15 @@
+# Для установки скопируйте этот файл в /etc/systemd/system/ через: sudo cp bridgeit.service /etc/systemd/system/
+[Unit]
+Description=BridgeIt Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/BRIDGEIT/bridgeit_bot
+ExecStart=/root/BRIDGEIT/bridgeit_bot/bot_run.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
