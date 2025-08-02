@@ -135,33 +135,22 @@ class BridgeLogic:
     def __init__(self, pbn: str):
         self._pbn_str = pbn_ok(pbn)
         self.deal = Deal.from_pbn(self._pbn_str)
-
         self._orig_pbn = self._pbn_str
-
-        self._dd_ref_deal = (
-            self.deal.clone() if hasattr(self.deal, "clone")
-            else Deal.from_pbn(self._pbn_str)
-        )
-
+        self._dd_ref_deal = self.deal.clone() if hasattr(self.deal, "clone") else Deal.from_pbn(self._pbn_str)
         self._start_len = len(self.deal[Player.north])
-
         if len({len(self.deal[p]) for p in Player}) != 1:
             raise ValueError("Во всех руках должно быть одинаковое количество карт.")
-
         self.contract: Denom | None = None
         self.declarer: Player | None = None
-
-        # история розыгрыша
         self._trick_history: List[List[Tuple[Player, Card]]] = []
         self._trick_manual_flags: List[List[bool]] = []
-
-        # текущая (неполная) взятка
+        self._trick_equal_flags: List[List[bool]] = []
         self._current: List[Tuple[Player, Card]] = []
         self._current_manual: List[bool] = []
-
-        # план автодоигрыша
+        self._current_equal: List[bool] = []
         self._auto_plan: List[List[Tuple[Player, Card]]] = []
         self._auto_manual_flags: List[List[bool]] = []
+        self._auto_equal_flags: List[List[bool]] = []
 
     def to_pbn(self) -> str:
         return self._pbn_str[2:]
@@ -409,53 +398,48 @@ class BridgeLogic:
         return any(card_suit(c) == suit for c in hand)
 
     def _flush_auto(self) -> None:
-        """
-        Переносит все автосыгранные взятки (_auto_plan) в обычную историю
-        (_trick_history) в хронологическом порядке и очищает буферы авто-плана.
-        Этот метод вызывается каждый раз, когда пользователь делает
-        «ручное» действие либо заново запускает автодоигрыш.
-        """
         if self._auto_plan:
             self._trick_history.extend(self._auto_plan)
             self._trick_manual_flags.extend(self._auto_manual_flags)
+            self._trick_equal_flags.extend(self._auto_equal_flags)
             self._auto_plan.clear()
             self._auto_manual_flags.clear()
+            self._auto_equal_flags.clear()
 
     # ───── одиночный ход ─────
     # ───── может быть ValueError ─────
     def play_card(self, card_str: str) -> str:
-        """
-        Делает одиночный ход указанной картой и возвращает строку-сообщение.
-        """
-        # сначала фиксируем все ранее автосыгранные, чтобы они не слетели
         self._flush_auto()
-
         pl = self.current_player()
         card = Card(normalize_card(card_str))
-
         if card not in self.deal[pl]:
             raise ValueError(f"{card} нет у {pl.abbr}.")
-
         if self._current:
             led = card_suit(self._current[0][1])
             if self._has_suit(self.deal[pl], led) and card_suit(card) != led:
                 return f"{pl.abbr} обязан ходить {SUIT_ICONS[led]}."
-
+        eq_flag = False
+        if self.contract is not None:
+            opts = self.move_options()
+            if opts:
+                best = max(opts.values())
+                code = f"{card_rank(card)}{card_suit(card)}"
+                eq_flag = opts.get(code) == best
         self.deal.play(card)
         self._current.append((pl, card))
         self._current_manual.append(True)
-
-        message = f"Ход: {fmt_card_full(pl, card)}"
-
+        self._current_equal.append(eq_flag)
+        msg = f"Ход: {fmt_card_full(pl, card)}"
         if len(self._current) == 4:
             self._trick_history.append(self._current.copy())
             self._trick_manual_flags.append(self._current_manual.copy())
+            self._trick_equal_flags.append(self._current_equal.copy())
             trump = None if self.contract is Denom.nt else self.contract
             self.deal.first = trick_winner(self._current, trump)
             self._current.clear()
             self._current_manual.clear()
-
-        return message
+            self._current_equal.clear()
+        return msg
 
     # ───── может быть ValueError ─────
     def play_trick(self, trick: str) -> str:
@@ -509,10 +493,12 @@ class BridgeLogic:
 
         if self._auto_plan:
             seq = self._auto_plan.pop()
-            self._auto_manual_flags.pop()
+            self._auto_manual_flags.pop() if self._auto_manual_flags else None
+            self._auto_equal_flags.pop() if self._auto_equal_flags else None
         elif self._trick_history:
             seq = self._trick_history.pop()
             self._trick_manual_flags.pop()
+            self._trick_equal_flags.pop()
         else:
             return "Нет информации о предыдущих взятках."
 
@@ -531,6 +517,7 @@ class BridgeLogic:
         if self._current:
             pl, card = self._current.pop()
             self._current_manual.pop()
+            self._current_equal.pop()
             try:
                 self.deal.unplay()
             except RuntimeError:
@@ -540,10 +527,12 @@ class BridgeLogic:
 
         if self._auto_plan:
             seq = self._auto_plan.pop()
-            flags = self._auto_manual_flags.pop()
+            flags = self._auto_manual_flags.pop() if self._auto_manual_flags else [False] * len(seq)
+            eqfl = self._auto_equal_flags.pop() if self._auto_equal_flags else [False] * len(seq)
         elif self._trick_history:
             seq = self._trick_history.pop()
             flags = self._trick_manual_flags.pop()
+            eqfl = self._trick_equal_flags.pop()
         else:
             return "Нет предыдущих ходов для отмены."
 
@@ -556,13 +545,26 @@ class BridgeLogic:
 
         self._current.clear()
         self._current_manual.clear()
+        self._current_equal.clear()
+
         if len(seq) > 1:
             self.deal.first = seq[0][0]
-            for i in range(len(seq) - 1):
-                pl, card = seq[i]
-                self.deal.play(card)
+            for pl, card, fl in zip(
+                    (p for p, _ in seq[:-1]),
+                    (c for _, c in seq[:-1]),
+                    flags[:-1]):
+                eq_flag = False
+                if self.contract is not None:
+                    opts = self.move_options()  # до хода
+                    if opts:
+                        best = max(opts.values())
+                        code = f"{card_rank(card)}{card_suit(card)}"
+                        eq_flag = opts.get(code) == best
+                self.deal.play(card)  # сам ход
                 self._current.append((pl, card))
-                self._current_manual.append(flags[i])
+                self._current_manual.append(fl)
+                self._current_equal.append(eq_flag)
+
         pl_last, card_last = seq[-1]
         return f"Отменили ход: {pl_last.abbr}{card_last}"
 
@@ -580,25 +582,24 @@ class BridgeLogic:
 
     # ───── история всех взяток + счёт ─────
     def show_history(self) -> str:
-        """
-        Корректно показывает историю розыгрыша в хронологическом порядке.
-        Поддерживает частично начатые и автосыгранные взятки и правильно
-        пересчитывает счёт NS/EW.
-        """
         unknown = 13 - self._start_len
 
-        tricks: list[list[tuple[Player, Card]]] = []
-        flags:  list[list[bool]]               = []
+        tricks: List[List[Tuple[Player, Card]]] = []
+        flags: List[List[bool]] = []
+        eqfls: List[List[bool]] = []
 
         tricks.extend(self._trick_history)
         flags.extend(self._trick_manual_flags)
+        eqfls.extend(self._trick_equal_flags)
 
         tricks.extend(self._auto_plan)
         flags.extend(self._auto_manual_flags)
+        eqfls.extend(self._auto_equal_flags)
 
         if self._current:
             tricks.append(self._current)
             flags.append(self._current_manual + [False] * (4 - len(self._current)))
+            eqfls.append(self._current_equal + [False] * (4 - len(self._current)))
 
         out = [""]
         line_no = 1
@@ -607,18 +608,29 @@ class BridgeLogic:
             out.append(f"{line_no:2}: —")
             line_no += 1
 
-        for seq, fl in zip(tricks, flags):
+        for i in range(len(tricks)):
+            seq = tricks[i]
+            fl = flags[i] if i < len(flags) else [False] * len(seq)
+            eq = eqfls[i] if i < len(eqfls) else [False] * len(seq)
+
             out.append(f"{line_no:2}: {fmt_seq(seq)}")
+
             if any(fl):
-                padded = fl + [False] * (4 - len(fl))
-                arrow = "  ".join("^^^" if f else "   " for f in padded).rstrip()
-                out.append("    " + arrow)
+                pm = fl + [False] * (4 - len(fl))
+                pe = eq + [False] * (4 - len(eq))
+                marks = []
+                for m, e in zip(pm, pe):
+                    if not m:
+                        marks.append("   ")
+                    else:
+                        marks.append("^*^" if e else "^^^")
+                out.append("    " + "  ".join(marks).rstrip())
+
             line_no += 1
 
         trump = None if self.contract in (None, Denom.nt) else self.contract
         finished = [t for t in tricks if len(t) == 4]
-        ns = sum(trick_winner(t, trump) in (Player.north, Player.south)
-                 for t in finished)
+        ns = sum(trick_winner(t, trump) in (Player.north, Player.south) for t in finished)
         ew = len(finished) - ns
 
         out += ["", f"Количество взяток на линиях:\nNS – {ns}\nEW – {ew}", ""]
@@ -675,6 +687,7 @@ class BridgeLogic:
                 self.deal[pl].add(c)
         self._auto_plan.clear()
         self._auto_manual_flags.clear()
+        self._auto_equal_flags.clear()
 
     # ───── доигрыш + план розыгрыша ─────
     def play_optimal_to_end(self) -> None:
@@ -701,6 +714,8 @@ class BridgeLogic:
                 manual_flags.append(False)
             self._auto_plan.append(cur)
             self._auto_manual_flags.append(manual_flags)
+            eq_flags = self._current_equal.copy()
+            self._auto_equal_flags.append(eq_flags)
             self.deal.first = trick_winner(
                 cur, None if self.contract is Denom.nt else self.contract)
             self._current.clear()
@@ -716,6 +731,7 @@ class BridgeLogic:
                 flags.append(False)
             self._auto_plan.append(trick)
             self._auto_manual_flags.append(flags)
+            self._auto_equal_flags.append([False] * 4)
             self.deal.first = trick_winner(
                 trick, None if self.contract is Denom.nt else self.contract)
 
@@ -749,15 +765,6 @@ class BridgeLogic:
 
     # ───── может быть ValueError ─────
     def goto_card(self, trick_no: int, card_no: int) -> str:
-        """
-        Откатывается к моменту *перед* картой №card_no (1–4) во взятке №trick_no
-        (нумерация как в show_history, с учётом ранних «—»).
-
-        Возвращает строку:
-            «Откатились к взятке N, карта M.»
-
-        При неверных параметрах возбуждает ValueError.
-        """
         if not (1 <= card_no <= 4):
             raise ValueError("Номер карты 1–4.")
 
@@ -765,41 +772,62 @@ class BridgeLogic:
         if trick_no <= unknown:
             raise ValueError("Эти ранние взятки неизвестны – откат невозможен.")
 
-        full_tricks = self._trick_history + self._auto_plan
-        full_flags  = self._trick_manual_flags + self._auto_manual_flags
+        full_tricks = (
+                self._trick_history
+                + self._auto_plan
+                + ([self._current.copy()] if self._current else [])
+        )
+        full_mflags = (
+                self._trick_manual_flags
+                + self._auto_manual_flags
+                + ([self._current_manual.copy()] if self._current else [])
+        )
+        full_eqflags = (
+                self._trick_equal_flags
+                + self._auto_equal_flags
+                + ([self._current_equal.copy()] if self._current else [])
+        )
+
         idx = trick_no - unknown - 1
         if idx >= len(full_tricks):
             raise ValueError("Такой взятки ещё нет.")
 
         target_trick = full_tricks[idx]
-        target_flags = full_flags[idx]
+        target_mflags = full_mflags[idx] if idx < len(full_mflags) else []
+        target_eqflags = full_eqflags[idx] if idx < len(full_eqflags) else []
+
+        if card_no - 1 >= len(target_trick):
+            raise ValueError("Этой карты во взятке ещё нет.")
 
         self.deal = Deal.from_pbn(self._orig_pbn)
 
-        # обнуляем оперативные структуры
         self._trick_history.clear()
         self._trick_manual_flags.clear()
+        self._trick_equal_flags.clear()
         self._auto_plan.clear()
         self._auto_manual_flags.clear()
+        self._auto_equal_flags.clear()
         self._current.clear()
         self._current_manual.clear()
+        self._current_equal.clear()
 
         trump = None if self.contract in (None, Denom.nt) else self.contract
 
         for i in range(idx):
-            seq, fl = full_tricks[i], full_flags[i]
+            seq = full_tricks[i]
+            mfl = full_mflags[i]
+            eqfl = full_eqflags[i]
 
             self.deal.first = seq[0][0]
-
-            for _, old_card in seq:
-                self.deal.play(Card(str(old_card)))
+            for _, c in seq:
+                self.deal.play(Card(str(c)))
 
             self._trick_history.append(seq)
-            self._trick_manual_flags.append(fl)
+            self._trick_manual_flags.append(mfl)
+            self._trick_equal_flags.append(eqfl)
 
             self.deal.first = trick_winner(seq, trump)
 
-        # ── 2. начинаем целевую взятку ─────────────────────────────────────
         self.deal.first = target_trick[0][0]
 
         for j in range(card_no - 1):
@@ -807,48 +835,42 @@ class BridgeLogic:
             new_card = Card(str(old_card))
             self.deal.play(new_card)
             self._current.append((pl, new_card))
-            self._current_manual.append(target_flags[j])
+            self._current_manual.append(target_mflags[j] if j < len(target_mflags) else False)
+            self._current_equal.append(target_eqflags[j] if j < len(target_eqflags) else False)
 
         return f"Откатились к взятке {trick_no}, карта {card_no}."
 
-
-
     def play_optimal_card(self, *, announce: bool = True) -> str:
-        """
-        Делает оптимальный (по DDS) ход для текущего игрока и
-        возвращает строку-сообщение.
-        """
         if self.contract is None:
             return "Сначала задайте контракт." if announce else ""
-
         if all(len(self.deal[p]) == 0 for p in Player):
             return "Сдача уже закончена — ходов нет." if announce else ""
-
         if len(self._current) == 4:
             trump = None if self.contract is Denom.nt else self.contract
             self._trick_history.append(self._current.copy())
             self._trick_manual_flags.append(self._current_manual.copy())
+            self._trick_equal_flags.append(self._current_equal.copy())
             self.deal.first = trick_winner(self._current, trump)
             self._current.clear()
             self._current_manual.clear()
-
+            self._current_equal.clear()
         card = self.optimal_move()
-        pl   = self.current_player()
+        pl = self.current_player()
         self.deal.play(card)
         self._current.append((pl, card))
         self._current_manual.append(False)
-
-        message = f"Оптимальный ход: {fmt_card_full(pl, card)}" if announce else ""
-
+        self._current_equal.append(False)
+        msg = f"Оптимальный ход: {fmt_card_full(pl, card)}" if announce else ""
         if len(self._current) == 4:
             trump = None if self.contract is Denom.nt else self.contract
             self._trick_history.append(self._current.copy())
             self._trick_manual_flags.append(self._current_manual.copy())
+            self._trick_equal_flags.append(self._current_equal.copy())
             self.deal.first = trick_winner(self._current, trump)
             self._current.clear()
             self._current_manual.clear()
-
-        return message
+            self._current_equal.clear()
+        return msg
 
     def play_optimal_trick(self, *, announce: bool = True) -> str:
         """
