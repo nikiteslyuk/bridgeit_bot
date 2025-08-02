@@ -623,7 +623,7 @@ class BridgeLogic:
                     if not m:
                         marks.append("   ")
                     else:
-                        marks.append("^*^" if e else "^^^")
+                        marks.append("^•^" if e else "^^^")
                 out.append("    " + "  ".join(marks).rstrip())
 
             line_no += 1

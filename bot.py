@@ -132,14 +132,9 @@ def ignore_telegram_edit_errors(func):
 
 
 async def _show_active_window(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not (context.user_data.get("logic") or
-            context.user_data.get("detector") or
-            context.user_data.get("state")):
-        return
-
     chat_id = update.effective_chat.id
 
-    logic: BridgeLogic | None = context.user_data.get("logic")
+    logic = context.user_data.get("logic")
     contract_set = context.user_data.get("contract_set", False)
     state = context.user_data.get("state")
 
@@ -150,35 +145,36 @@ async def _show_active_window(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.user_data.get("highlight_moves", False),
         )
         sent = await context.bot.send_message(
-            chat_id=chat_id,
-            text=_pre(logic.display()),
+            chat_id,
+            _pre(logic.display()),
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=kb,
         )
         context.user_data["active_msg_id"] = sent.message_id
+        return
 
-    elif logic and not contract_set:
+    if logic and not contract_set:
         if state == STATE_CONTRACT_CHOOSE_FIRST:
             sent = await context.bot.send_message(
-                chat_id=chat_id,
-                text="Кто делает первый ход?",
+                chat_id,
+                "Кто делает первый ход?",
                 reply_markup=contract_first_keyboard(),
             )
         else:
             sent = await context.bot.send_message(
-                chat_id=chat_id,
-                text="Выберите деноминацию контракта:",
+                chat_id,
+                "Выберите деноминацию контракта:",
                 reply_markup=contract_denom_keyboard(),
             )
         context.user_data["active_msg_id"] = sent.message_id
+        return
 
-    else:
-        sent = await context.bot.send_message(
-            chat_id=chat_id,
-            text="Выберите действие:",
-            reply_markup=main_menu_markup(),
-        )
-        context.user_data["active_msg_id"] = sent.message_id
+    sent = await context.bot.send_message(
+        chat_id,
+        "Выберите действие:",
+        reply_markup=main_menu_markup(),
+    )
+    context.user_data["active_msg_id"] = sent.message_id
 
 
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -489,7 +485,7 @@ def get_help_text() -> str:
         
     2. Клавиатура функций
     2.1 ⏭️ Доиграть до конца — оптимально по DD разыграть все оставшиеся карты и открыть историю
-    2.2 📜 История — показать все взятки; *ваши* ходы помечены **^^^** (если они не оптимальны) или **^*^** (если совпадают с оптимальными по количеству взяток); ходы, сделанные автоматически, не маркируются; формат карт *N♥A* — туз ♥ с руки N
+    2.2 📜 История — показать все взятки; *ваши* ходы помечены **^^^** (если они не оптимальны) или **^•^** (если совпадают с оптимальными по количеству взяток); ходы, сделанные автоматически, не маркируются; формат карт *N♥A* — туз ♥ с руки N
     2.3 📊 DD-таблица — таблица Double-Dummy для всех деноминаций
     2.4 🔦 Подсветить ходы / 🚫 Скрыть — показывать число взяток для линии текущего игрока (NS или EW) для каждой доступной карты
     2.5 ⤴️ К карте — отмотать анализ до выбранной (из истории) карты
@@ -526,10 +522,13 @@ async def _send_limit_and_menu(msg, text, context):
 
 
 # ─── helper ─────────────────────────────────────────────────────────
-async def _send_limit(msg, text):
-    """Шлём предупреждение и помечаем текущее окно как неактуальное."""
-    warn = await msg.reply_text(text)
-    return warn
+async def _send_limit(update: Update, text: str, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(text)
+    if context.user_data.get("logic") or context.user_data.get("detector") or context.user_data.get("state"):
+        await _show_active_window(update, context)
+        return
+    sent = await update.message.reply_text("Выберите действие:", reply_markup=main_menu_markup())
+    context.user_data["active_msg_id"] = sent.message_id
 
 
 # ─── cmd_pbn ────────────────────────────────────────────────────────
@@ -538,75 +537,57 @@ async def cmd_pbn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     uid     = update.effective_user.id
 
-    # == лимит ======================================
     if uid not in UNLIMITED_ID:
+        db = {}
         if os.path.exists(CACHED_PBN_DATABASE_NAME):
-            with open(CACHED_PBN_DATABASE_NAME, "r") as jf:
-                database = json.load(jf)
-        else:
-            database = {}
+            with open(CACHED_PBN_DATABASE_NAME) as jf:
+                db = json.load(jf)
         interval = datetime.timedelta(minutes=PBN_LIMIT_INTERVAL_MIN)
         now      = datetime.datetime.now()
-        recent   = [
-            datetime.datetime.fromisoformat(t)
-            for t in database.get(chat_id, [])
-            if now - datetime.datetime.fromisoformat(t) < interval
-        ]
+        recent   = [datetime.datetime.fromisoformat(t)
+                    for t in db.get(chat_id, [])
+                    if now - datetime.datetime.fromisoformat(t) < interval]
         if len(recent) >= PBN_LIMIT_COUNT:
             wait = interval - (now - min(recent))
-            await _send_limit(
-                update.message,
-                f"🚫 Превышен лимит. Следующий запрос PBN через {await russian_precisedelta(wait)}.",
-            )
-            # сразу дублируем предыдущее активное окно (если было)
-            await _show_active_window(update, context)
+            await _send_limit(update,
+                              f"🚫 Превышен лимит. Следующий запрос PBN через {await russian_precisedelta(wait)}.",
+                              context)
             return
-
         recent.append(now)
-        database[chat_id] = [t.isoformat() for t in recent]
+        db[chat_id] = [t.isoformat() for t in recent]
         with open(CACHED_PBN_DATABASE_NAME, "w") as jf:
-            json.dump(database, jf)
+            json.dump(db, jf)
 
-    # == обычный вывод PBN ===========================================
-    detector: BridgeCardDetector | None = context.user_data.get("detector")
-    logic:    BridgeLogic        | None = context.user_data.get("logic")
+    detector = context.user_data.get("detector")
+    logic    = context.user_data.get("logic")
 
     if detector:
-        pbn  = detector.to_pbn()
-        await update.message.reply_text(
-            f"PBN (N, E, S, W):\n{_pre(pbn)}",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        sent = await update.message.reply_text(
-            _pre(detector.preview()),
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=analyze_result_markup(),
-        )
+        pbn = detector.to_pbn()
+        await update.message.reply_text(f"PBN (N, E, S, W):\n{_pre(pbn)}",
+                                        parse_mode=ParseMode.MARKDOWN)
+        sent = await update.message.reply_text(_pre(detector.preview()),
+                                               parse_mode=ParseMode.MARKDOWN,
+                                               reply_markup=analyze_result_markup())
         context.user_data["active_msg_id"] = sent.message_id
         return
 
-    if logic and context.user_data.get("contract_set"):
+    if logic:
         pbn = logic.to_pbn()
-        await update.message.reply_text(
-            f"PBN (N, E, S, W):\n{_pre(pbn)}",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        board  = _pre(logic.display())
-        kb     = make_board_keyboard(
-            logic,
-            False,
-            context.user_data.get("highlight_moves", False),
-        )
-        sent = await update.message.reply_text(
-            board,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=kb,
-        )
-        context.user_data["active_msg_id"] = sent.message_id
+        await update.message.reply_text(f"PBN (N, E, S, W):\n{_pre(pbn)}",
+                                        parse_mode=ParseMode.MARKDOWN)
+        if context.user_data.get("contract_set"):
+            kb   = make_board_keyboard(logic,
+                                       False,
+                                       context.user_data.get("highlight_moves", False))
+            sent = await update.message.reply_text(_pre(logic.display()),
+                                                   parse_mode=ParseMode.MARKDOWN,
+                                                   reply_markup=kb)
+            context.user_data["active_msg_id"] = sent.message_id
+        else:
+            await _show_active_window(update, context)
         return
 
-    await _send_limit(update.message, "❌ Нет активного расклада для вывода PBN.")
-    await _show_active_window(update, context)
+    await _send_limit(update, "❌ Нет активного расклада для вывода PBN.", context)
 
 
 async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
