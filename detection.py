@@ -13,6 +13,7 @@ from ultralytics import YOLO, __version__ as ULTRA_VER
 from sklearn.mixture import GaussianMixture
 
 # ──────────── константы ────────────
+MODEL = "yolov8s_playing_cards.pt"
 MAX_HAND_LEN = 13
 RANKS = "AKQJT98765432"
 SUITS = "SHDC"
@@ -44,7 +45,7 @@ def _hand_pretty(hand: Set[str]) -> str:
 
 # ──────────── основной класс ────────────
 class BridgeCardDetector:
-    def __init__(self, img_path: str, model_path: str = "yolov8s_playing_cards.pt"):
+    def __init__(self, img_path: str, model_path: str = MODEL):
         if tuple(map(int, ULTRA_VER.split(".")[:3])) < (8, 2, 0):
             raise RuntimeError("Требуется Ultralytics ≥ 8.2.0")
 
@@ -581,10 +582,10 @@ class BridgeCardDetector:
 # ──────────── демо ────────────
 if __name__ == "__main__":
     # det = BridgeCardDetector.from_pbn("T652.7652.Q6.AKJ 3.3.T97532.Q9853 Q4.AKQ984.AK4.76 AKJ987.JT.J8.T42")
-    det = BridgeCardDetector('img/test/7.jpeg')
+    det = BridgeCardDetector('/Users/nikiteslyuk/Desktop/9.jpeg')
 
     print(det.preview())
 
-    annotated_output = 'img/test/7_annotated.jpg'
+    annotated_output = '/Users/nikiteslyuk/Desktop/9_annotated.jpeg'
     det.visualize(annotated_output, debug=True)
     print(f"Размеченное изображение сохранено в {annotated_output}")
